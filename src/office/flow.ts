@@ -1,5 +1,5 @@
 /**
- * Luồng giấy tờ và đường đi trong văn phòng (mục 5 của KE-HOACH.md). Hàm thuần, không dùng WebGL, nên kiểm thử được
+ * Luồng giấy tờ và đường đi trong văn phòng. Hàm thuần, không dùng WebGL, nên kiểm thử được
  * bằng Node. Chỉ dùng cú pháp TypeScript "xóa được"; import mã chạy từ file khác phải có đuôi `.ts` (như layout.ts).
  */
 import type { Epic, Job, Task } from '../lib/types';

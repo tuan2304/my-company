@@ -33,18 +33,21 @@ function allRoutes(layout, people = layout.people) {
   return routes;
 }
 
-test('số nhân vật theo từng team khớp đúng cấu hình thật, đều nằm ở tầng 1', () => {
+test('số nhân vật theo từng team khớp đúng cấu hình thật; sáu team đầu kín tầng 1, team thứ bảy lên tầng 2', () => {
   const teams = realTeams();
   const b = layoutBuilding(teams);
   const expected = Object.fromEntries(teams.filter((t) => t.id !== 'management').map((t) => [t.id, t.members.length]));
   assert.deepEqual(countByTeam(b), { ...expected, management: 1 });
-  assert.equal(b.people.length, 18, '1 Giám đốc + 6 Trưởng nhóm + 11 nhân viên');
-  assert.equal(b.floors.length, 1, 'sáu team vừa một tầng');
+  assert.equal(b.people.length, 20, '1 Giám đốc + 7 Trưởng nhóm + 12 nhân viên');
+  assert.equal(b.floors.length, 2, 'tầng 1 chỉ có sáu cụm bàn nên team thứ bảy lên tầng 2');
   const names = b.people.map((p) => p.name);
   assert.equal(new Set(names).size, names.length);
-  assert.deepEqual(b.people.filter((p) => p.isLead).map((p) => p.name).sort(), ['Hòa', 'Hải', 'Khôi', 'Lan', 'Minh', 'Ngọc', 'Phúc'].sort());
-  assert.deepEqual(b.floors[0].zones.map((z) => z.id).sort(), ['backend', 'design', 'devops', 'frontend', 'quality', 'security']);
-  assert.ok(b.people.every((p) => b.floorOf[p.name] === 0 && p.floor === 0));
+  assert.deepEqual(b.people.filter((p) => p.isLead).map((p) => p.name).sort(), ['Hòa', 'Hải', 'Khôi', 'Lan', 'Minh', 'Ngọc', 'Phúc', 'Thảo'].sort());
+  const work = teams.filter((t) => t.id !== 'management').map((t) => t.id);
+  assert.deepEqual(b.floors[0].zones.map((z) => z.id).sort(), work.slice(0, 6).sort());
+  assert.deepEqual(b.floors[1].zones.map((z) => z.id), work.slice(6));
+  assert.deepEqual([...work].sort(), ['backend', 'design', 'devops', 'frontend', 'quality', 'report', 'security']);
+  assert.ok(b.people.every((p) => b.floorOf[p.name] === (work.slice(6).includes(p.teamId) ? 1 : 0) && p.floor === b.floorOf[p.name]));
 });
 
 test('tòa nhà có hình dạng cố định tỉ lệ 3:2; thêm team không làm nó dài ra', () => {

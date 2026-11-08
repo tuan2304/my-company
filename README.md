@@ -37,7 +37,7 @@ Một ứng dụng web chạy trên máy của bạn, biến Claude Code thành 
 
 **Dành cho:** lập trình viên (hoặc người làm sản phẩm) có một dự án git và một tài khoản Claude Pro, muốn giao việc cho AI theo kiểu "quản lý một đội" thay vì "ngồi cạnh một trợ lý".
 
-**Công ty gồm 7 team gửi kèm** (sửa hoặc thêm team bằng file Markdown trong `teams/`, không cần sửa code): Ban giám đốc, Backend, Frontend, Chất lượng (QA), DevOps, Thiết kế UI/UX, Bảo mật; tổng 18 nhân viên.
+**Công ty gồm 8 team gửi kèm** (sửa hoặc thêm team bằng file Markdown trong `teams/`, không cần sửa code): Ban giám đốc, Backend, Frontend, Chất lượng (QA), DevOps, Thiết kế UI/UX, Bảo mật, Báo cáo; tổng 20 nhân viên (tầng 1 chỉ đủ chỗ cho sáu team, team thứ bảy ngồi tầng 2).
 
 ## 3. Cách hoạt động
 
@@ -291,11 +291,21 @@ Skill được tải vào khu cách ly, **hãy tự đọc `SKILL.md` và mọi 
 ## Phát triển
 
 ```bash
-npm test          # 279 bài kiểm thử, dùng claude giả (tests/fixtures/fake-claude.mjs), không tốn hạn mức
+npm test          # 287 bài kiểm thử, dùng claude giả (tests/fixtures/fake-claude.mjs), không tốn hạn mức
 npm run lint
 npm run typecheck
 npm run dev       # giao diện chạy chế độ phát triển
 ```
+
+### Báo cáo mỗi lần push
+
+Dùng `npm run push` thay cho `git push`. Sau khi push xong, Team Báo cáo (`teams/report/`, chạy qua `scripts/push-report.mjs`) ghi một file Markdown mô tả những gì vừa push vào `reports/<năm-tháng>/<việc-đã-làm>.md`, commit file đó rồi push thêm một lần. Mỗi lần push một file; tên file lấy từ tiêu đề việc đã làm.
+
+- Team Báo cáo cũng có mặt trong văn phòng (Trưởng nhóm Thảo, người viết Mai) và nhận việc từ Giám đốc như các team khác: khai `reports: [reports]` trong `local/project.md` để Mai được phép ghi vào thư mục `reports/`. Chỉ dẫn viết báo cáo nằm ở `teams/report/reporter.md`, dùng chung cho cả lệnh `npm run push`.
+- Tóm tắt do Mai (Claude haiku) viết bằng đăng nhập gói Pro (không dùng API). Không gọi được Claude thì báo cáo vẫn được ghi, chỉ có phần dữ kiện lấy từ git. Thêm `--no-ai` để chủ động bỏ phần tóm tắt.
+- Mọi tham số khác được chuyển cho `git push`, ví dụ `npm run push -- origin master`.
+- Lần push chỉ chứa thư mục `reports/` không tạo báo cáo mới, nên không lặp vô hạn.
+- Git không có hook "sau khi push", nên `git push` trần sẽ không tạo báo cáo. Viết bù cho một khoảng commit: `node scripts/push-report.mjs --range <từ>..<đến>`.
 
 ## Giấy phép
 

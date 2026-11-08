@@ -1,5 +1,5 @@
 /**
- * Bố cục văn phòng (mục 5 của KE-HOACH.md). Hàm thuần: nhận danh sách team từ /api/state và trả về vị trí của mọi thứ,
+ * Bố cục văn phòng. Hàm thuần: nhận danh sách team từ /api/state và trả về vị trí của mọi thứ,
  * nên kiểm thử được mà không cần WebGL. File này chỉ dùng cú pháp TypeScript "xóa được" (không enum, không tham số thuộc
  * tính) để Node chạy thẳng được trong bài kiểm thử.
  *

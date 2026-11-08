@@ -90,6 +90,7 @@ export function renderProjectDraft({ name, stack, commands }) {
   lines.push('  devops:   []   # ví dụ [.github, infra, Dockerfile]');
   lines.push('  design:   []   # ví dụ [design, docs/design]: đặc tả thiết kế, không phải code giao diện');
   lines.push('  security: []   # ví dụ [docs/security]: nơi người rà soát ghi báo cáo');
+  lines.push('  reports:  []   # ví dụ [reports]: nơi Team Báo cáo ghi báo cáo mỗi lần push');
   lines.push('  shared:   []');
   lines.push('commands:');
   for (const [key, value] of Object.entries(commands)) lines.push(`  ${key}: ${value}`);

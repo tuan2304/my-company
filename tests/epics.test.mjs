@@ -307,7 +307,7 @@ test('luật của công cụ Giám đốc: team lạ, trùng tiêu đề, phụ
     assert.match((await ctx.runner.callAgentTool(token, 'get_company_overview', {})).text, /## Team Backend[\s\S]*An .*còn nhận thêm[\s\S]*## Team Frontend[\s\S]*Cúc[\s\S]*## Team Chất lượng[\s\S]*Quân/);
     assert.doesNotMatch((await ctx.runner.callAgentTool(token, 'get_company_overview', {})).text, /Ban giám đốc|Hòa/);
     const overview = (await ctx.runner.callAgentTool(token, 'get_company_overview', {})).text;
-    for (const [name, hint] of [['Team DevOps', /KHÔNG tự triển khai/], ['Team Thiết kế UI\/UX', /ĐẶC TẢ thiết kế/], ['Team Bảo mật', /KHÔNG sửa code chính/]]) {
+    for (const [name, hint] of [['Team DevOps', /KHÔNG tự triển khai/], ['Team Thiết kế UI\/UX', /ĐẶC TẢ thiết kế/], ['Team Bảo mật', /KHÔNG sửa code chính/], ['Team Báo cáo', /MỘT tệp/]]) {
       assert.match(overview, new RegExp(`## ${name}[^\n]*\nPhạm vi: [^\n]*`), `${name} có dòng Phạm vi trong tổng quan`);
       assert.match(overview, hint);
     }
@@ -368,7 +368,7 @@ test('API của yêu cầu, bảng tải team và nhật ký hội thoại', asy
     assert.equal((await approved.json()).epic.status, 'done');
 
     const workload = await (await get('/api/workload')).json();
-    assert.deepEqual(workload.teams.map((t) => t.id).sort(), ['backend', 'design', 'devops', 'frontend', 'management', 'quality', 'security']);
+    assert.deepEqual(workload.teams.map((t) => t.id).sort(), ['backend', 'design', 'devops', 'frontend', 'management', 'quality', 'report', 'security']);
     const backend = workload.teams.find((t) => t.id === 'backend');
     assert.deepEqual(backend.workers.map((w) => w.name), ['An', 'Bình', 'Hương']);
     assert.equal(workload.teams.find((t) => t.id === 'management').workers.length, 0);

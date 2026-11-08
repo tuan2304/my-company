@@ -205,7 +205,7 @@ test('detectStack nhận ra Tailwind CSS từ package.json', () => {
   }
 });
 
-test('team DevOps, Thiết kế và Bảo mật: mỗi team có Trưởng nhóm, nhân viên, mô tả; mọi skill đã duyệt và nạp được', () => {
+test('team DevOps, Thiết kế, Bảo mật và Báo cáo: mỗi team có Trưởng nhóm, nhân viên, mô tả; mọi skill đã duyệt và nạp được', () => {
   const teams = loadTeams({ teamsDir: path.join(REPO, 'teams') });
   const lockFile = path.join(REPO, 'skills.lock');
   const libraryDir = path.join(REPO, 'skills', 'library');
@@ -213,6 +213,7 @@ test('team DevOps, Thiết kế và Bảo mật: mỗi team có Trưởng nhóm,
     devops: { lead: 'Khôi', worker: 'Sơn', role: 'devops-engineer' },
     design: { lead: 'Ngọc', worker: 'Vy', role: 'designer' },
     security: { lead: 'Hải', worker: 'Trinh', role: 'security-reviewer' },
+    report: { lead: 'Thảo', worker: 'Mai', role: 'reporter' },
   };
   const dir = tmpDir();
   try {
@@ -237,6 +238,12 @@ test('team DevOps, Thiết kế và Bảo mật: mỗi team có Trưởng nhóm,
     const designer = findMember(teams, 'Vy').role;
     assert.equal(designer.tools.includes('Bash'), false);
     // Kỹ sư DevOps có Bash để chạy lệnh test/build trong allowed_commands, nhưng chỉ chuẩn bị tệp, không triển khai.
+    // Người viết báo cáo ghi được tệp (Write) nhưng không có Edit: chỉ tạo báo cáo mới, không sửa code có sẵn.
+    const reporter = findMember(teams, 'Mai').role;
+    assert.equal(reporter.tools.includes('Write'), true);
+    assert.equal(reporter.tools.includes('Edit'), false);
+    assert.equal(reporter.model, 'haiku');
+    assert.match(reporter.body, /reports\/<năm-tháng>\/<việc-đã-làm>\.md/);
     const devops = findMember(teams, 'Sơn').role;
     assert.match(devops.body, /Không triển khai/);
 

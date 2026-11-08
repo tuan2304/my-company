@@ -1,7 +1,7 @@
 import type { Epic, Job, Task } from '../lib/types';
 
 /**
- * Trạng thái và hoạt động của từng người trong văn phòng (mục 5 của KE-HOACH.md). Toàn bộ là hàm thuần suy từ dữ liệu
+ * Trạng thái và hoạt động của từng người trong văn phòng. Toàn bộ là hàm thuần suy từ dữ liệu
  * máy chủ, nên kiểm thử được mà không cần WebGL. Giống layout.ts, file này chỉ dùng cú pháp TypeScript "xóa được"
  * và không import mã chạy từ file khác (Node không tự thêm đuôi .ts khi import).
  */

@@ -17,6 +17,7 @@
     "dev": "node bin/cli.mjs start --dev",
     "doctor": "node bin/cli.mjs doctor",
     "pin": "node bin/cli.mjs pin",
+    "push": "node scripts/push-report.mjs",
     "skills": "node bin/cli.mjs skills",
     "build": "next build",
     "lint": "eslint .",

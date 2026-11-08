@@ -38,7 +38,7 @@ export default function EpicForm({ disabled, onCreated }: Props) {
     <form className="card form" onSubmit={submit}>
       <h2>Giao yêu cầu cho cả công ty</h2>
       <p className="muted">
-        Giám đốc đọc code, chốt hợp đồng chung và chia việc cho từng team (Backend, Frontend, Chất lượng, DevOps, Thiết kế, Bảo mật; team nào có trong cấu hình thì nhận việc). Bạn duyệt kế hoạch trước khi các team bắt đầu, và duyệt kết quả cuối cùng.
+        Giám đốc đọc code, chốt hợp đồng chung và chia việc cho từng team (Backend, Frontend, Chất lượng, DevOps, Thiết kế, Bảo mật, Báo cáo; team nào có trong cấu hình thì nhận việc). Bạn duyệt kế hoạch trước khi các team bắt đầu, và duyệt kết quả cuối cùng.
       </p>
       <TemplatePicker kind="epic" onFill={(f) => { setTitle(f.title); setPrompt(f.prompt); setAcceptance(f.acceptance); }} />
       <label>
