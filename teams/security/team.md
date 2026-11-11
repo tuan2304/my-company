@@ -1,6 +1,8 @@
 ---
 name: Team Bảo mật
 lead: Hải
+# Team chỉ ghi tài liệu: hồ sơ dự án chưa khai folders cho team này thì nhân viên KHÔNG ghi được file nào.
+requires_folders: true
 members:
   - { name: Hải, role: lead }
   - { name: Trinh, role: security-reviewer, strengths: [review-mã, xác-thực, phụ-thuộc] }

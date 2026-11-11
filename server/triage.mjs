@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { sanitizedEnv, shorten } from './guard.mjs';
+import { getEngine } from './engines/index.mjs';
+import { shorten } from './guard.mjs';
 
 /**
  * Tự đánh giá độ khó của một việc để chọn model.
@@ -55,7 +56,7 @@ export function parseTriage(text) {
 const FALLBACK_REASON = 'Không đánh giá được độ khó, dùng mức Bình thường.';
 
 /** Trả về { level, reason, ok, usage, costUsd }. Không bao giờ ném lỗi. */
-export function triageTask({ cfg, task, role, project, cwd, onChild, timeoutMs = 60_000 }) {
+export function triageTask({ cfg, engine: given = null, task, role, project, cwd, onChild, timeoutMs = 60_000 }) {
   return new Promise((resolve) => {
     let settled = false;
     let stdout = '';
@@ -69,20 +70,14 @@ export function triageTask({ cfg, task, role, project, cwd, onChild, timeoutMs =
     };
     const fallback = () => ({ level: 'normal', reason: FALLBACK_REASON, ok: false });
 
-    const args = [
-      '-p',
-      '--output-format', 'json',
-      '--model', 'haiku',
-      '--effort', 'low',
-      '--tools', '',
-      '--max-turns', '1',
-      '--setting-sources', 'project,local',
-      '--strict-mcp-config',
-      '--system-prompt', RUBRIC,
-    ];
+    let engine;
     try {
-      child = spawn(cfg.claudeBin, [...cfg.claudeArgsPrefix, ...args], {
-        cwd, env: sanitizedEnv(), stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true,
+      engine = given ?? getEngine(cfg);
+      // Engine mà mỗi lần gọi đã tốn nhiều hạn mức nền (agy ~8 nghìn token) thì không đánh giá bằng AI: dùng mức Bình thường.
+      if (!engine.capabilities.triage) return finish({ level: 'normal', reason: `Engine ${engine.id} không tự đánh giá độ khó (tiết kiệm hạn mức), dùng mức Bình thường.`, ok: false });
+      const { bin, prefix } = engine.command(cfg);
+      child = spawn(bin, [...prefix, ...engine.triageArgs(RUBRIC)], {
+        cwd, env: engine.env(), stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true,
       });
     } catch {
       return finish(fallback());
@@ -102,15 +97,9 @@ export function triageTask({ cfg, task, role, project, cwd, onChild, timeoutMs =
     });
     child.on('error', () => finish(fallback()));
     child.on('close', () => {
-      let outer = null;
-      try {
-        const parsed = JSON.parse(stdout);
-        outer = Array.isArray(parsed) ? parsed.findLast((m) => m?.type === 'result') : parsed;
-      } catch {
-        /* đầu ra không phải JSON */
-      }
-      const verdict = outer && !outer.is_error ? parseTriage(outer.result) : null;
-      const extra = { usage: outer?.usage ?? {}, costUsd: outer?.total_cost_usd ?? 0 };
+      const out = engine.parseTriageOutput(stdout);
+      const verdict = out && !out.isError ? parseTriage(out.result) : null;
+      const extra = { usage: out?.usage ?? {}, costUsd: out?.costUsd ?? 0 };
       finish(verdict ? { ...verdict, ok: true, ...extra } : { ...fallback(), ...extra });
     });
   });

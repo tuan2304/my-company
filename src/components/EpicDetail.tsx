@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { EPIC_STATUS_LABEL, JOB_STATUS_LABEL, STATUS_LABEL, TASK_KIND_LABEL } from '@/lib/format';
 import type { Epic, Job, Task } from '@/lib/types';
+import { CHILD_PHASE_LABEL, jobPhase, splitByPhase } from '@/lib/work-groups';
 import FailurePanel from './FailurePanel';
 import IntegratePanel from './IntegratePanel';
 
@@ -101,28 +102,33 @@ export default function EpicDetail({ epic, jobs, directorTasks, selectedJobId, s
       <section>
         <h3>Việc cho các team ({jobs.length})</h3>
         {jobs.length === 0 && <p className="muted">Giám đốc chưa tạo việc nào.</p>}
-        <ul className="list-plain">
-          {jobs.map((j) => {
-            const deps = parseList(j.depends_on).map(Number);
-            return (
-              <li key={j.id}>
-                <button type="button" className={`row ${j.id === selectedJobId ? 'selected' : ''}`} onClick={() => onSelectJob(j.id)}>
-                  <span className="row-title">#{j.id} {j.title}</span>
-                  <span className="row-sub">
-                    {j.team} · Trưởng nhóm {j.lead}
-                    {deps.length > 0 ? ` · chờ ${deps.map(titleOf).join(', ')}` : ''}
-                    {j.round > 0 ? ` · làm lại đợt ${j.round}` : ''}
-                  </span>
-                  <span className={`chip job-${j.status}`}>{JOB_STATUS_LABEL[j.status]}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        {splitByPhase(jobs, (j) => jobPhase(j.status)).map((g) => (
+          <details key={g.phase} className={`group group-${g.phase}`} open={g.phase === 'problem' || g.phase === 'active' || jobs.length <= 6}>
+            <summary>{CHILD_PHASE_LABEL[g.phase]} <span className="group-count">{g.items.length}</span></summary>
+            <ul className="list-plain">
+              {g.items.map((j) => {
+                const deps = parseList(j.depends_on).map(Number);
+                return (
+                  <li key={j.id}>
+                    <button type="button" className={`row ${j.id === selectedJobId ? 'selected' : ''}`} onClick={() => onSelectJob(j.id)}>
+                      <span className="row-title">#{j.id} {j.title}</span>
+                      <span className="row-sub">
+                        {j.team} · Trưởng nhóm {j.lead}
+                        {deps.length > 0 ? ` · chờ ${deps.map(titleOf).join(', ')}` : ''}
+                        {j.round > 0 ? ` · làm lại đợt ${j.round}` : ''}
+                      </span>
+                      <span className={`chip job-${j.status}`}>{JOB_STATUS_LABEL[j.status]}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </details>
+        ))}
       </section>
 
-      <section>
-        <h3>Lượt của Giám đốc ({directorTasks.length})</h3>
+      <details className="group" open={directorTasks.some((t) => t.status === 'failed' || t.status === 'running')}>
+        <summary>Lượt của Giám đốc <span className="group-count">{directorTasks.length}</span></summary>
         <ul className="list-plain">
           {directorTasks.map((t) => (
             <li key={t.id}>
@@ -134,7 +140,7 @@ export default function EpicDetail({ epic, jobs, directorTasks, selectedJobId, s
             </li>
           ))}
         </ul>
-      </section>
+      </details>
 
       {epic.summary && (
         <section>

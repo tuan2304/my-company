@@ -189,6 +189,10 @@ const EXTRA_COLUMNS = [
   ['ask_owner_id', 'INTEGER'],
   // Thi đấu skill: bộ skill riêng của việc này (JSON, mảng tên skill), đè lên skill mặc định của vai trò.
   ['skill_set', 'TEXT'],
+  // Nhiều engine (xoay vòng): engine đang/đã chạy việc này (mã phiên chỉ có nghĩa với engine đó) và engine bị dừng vì hết hạn mức
+  // mà việc vừa được chuyển đi (để dặn bàn giao trong lời nhắc).
+  ['engine', 'TEXT'],
+  ['handoff_from', 'TEXT'],
 ];
 
 // Cột thêm cho bảng jobs ở giai đoạn 3: việc lớn của team nằm trong một yêu cầu, có thể phụ thuộc việc khác.
@@ -238,7 +242,7 @@ function migrate(db) {
 
 const TASK_COLUMNS = new Set([
   'level', 'level_source', 'level_reason', 'escalations', 'revisions', 'review_feedback', 'files', 'verdict', 'epic_id',
-  'failure_code', 'owner_guidance', 'recoveries', 'auto_retries', 'ask_owner_id',
+  'failure_code', 'owner_guidance', 'recoveries', 'auto_retries', 'ask_owner_id', 'engine', 'handoff_from',
   'status', 'model', 'effort', 'session_id', 'worktree', 'branch', 'base_commit', 'attempts', 'result',
   'error', 'changed_files', 'turns', 'duration_ms', 'input_tokens', 'output_tokens', 'cache_read_tokens',
   'cache_creation_tokens', 'est_cost_usd', 'resume_at', 'started_at', 'finished_at',

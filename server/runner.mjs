@@ -3,10 +3,12 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import { mcpName, TOOLS, toolsForKind } from './agent-tools.mjs';
+import { TOOLS, toolsForKind } from './agent-tools.mjs';
 import { buildDirectorSystemPrompt, Epics } from './epics.mjs';
+import { getEngine } from './engines/index.mjs';
 import { UserError } from './errors.mjs';
-import { maskSecrets, sanitizedEnv, shorten } from './guard.mjs';
+import { maskSecrets, shorten } from './guard.mjs';
+import { describeFolders } from './path-guard.mjs';
 import { buildLeadSystemPrompt, Jobs } from './jobs.mjs';
 import { looksLikeQuotaText, nextRetryAt, parseRateLimitEvent } from './quota.mjs';
 import { ANSWER_MAX_TURNS, Questions } from './questions.mjs';
@@ -16,8 +18,8 @@ import { nextTier, triageTask } from './triage.mjs';
 import { checkRepo, commitWorktree, createWorktree } from './worktree.mjs';
 
 export { UserError };
-
-const ALWAYS_DENIED = ['Bash(git push)', 'Bash(git push *)', 'Bash(git remote *)'];
+// Tham số dòng lệnh là việc của engine; giữ các tên cũ ở đây để mã và test hiện có vẫn import được từ runner.
+export { buildAllowedTools, buildAnswerArgs, buildClaudeArgs, buildGuardSettings, buildLeadArgs } from './engines/claude.mjs';
 
 /**
  * Độ khó của việc (mục 3.8): việc cần suy nghĩ thì dùng model cao, việc đơn giản dùng model thấp
@@ -30,24 +32,13 @@ export const LEVELS = {
   hard: { model: 'opus', effort: 'high', label: 'Khó' },
 };
 
-/** Công cụ tự động được phép: mọi công cụ không phải Bash, cộng các lệnh Bash trong hồ sơ dự án. */
-export function buildAllowedTools(role, project) {
-  const allowed = role.tools.filter((tool) => tool !== 'Bash');
-  if (role.tools.includes('Bash')) {
-    for (const command of project?.allowedCommands ?? []) {
-      allowed.push(`Bash(${command})`, `Bash(${command} *)`);
-    }
-  }
-  return allowed;
-}
-
 /** Công nghệ trong hồ sơ dự án có khớp với khóa (như "supabase") không? Dùng chung cho skill và ghi chú. */
 export function stackMatches(project, key) {
   const wanted = String(key).toLowerCase();
   return (project?.stack ?? []).some((s) => s.toLowerCase().includes(wanted));
 }
 
-export function buildSystemPrompt({ member, team, role, project, canAsk = false, skills = [] }) {
+export function buildSystemPrompt({ member, team, role, project, canAsk = false, skills = [], skillMode = 'tool' }) {
   const parts = [`Bạn là ${member.name}, ${role.title} của ${team.name} trong một công ty phần mềm.`];
   if (role.body) parts.push(role.body);
   const notes = Object.entries(role.stack_notes ?? {})
@@ -63,16 +54,28 @@ export function buildSystemPrompt({ member, team, role, project, canAsk = false,
     if (project.name) lines.push(`- Tên: ${project.name}`);
     if (project.stack.length) lines.push(`- Công nghệ: ${project.stack.join(', ')}`);
     const own = project.folders[team.id];
-    if (own?.length) lines.push(`- Thư mục thuộc team của bạn (chỉ sửa trong đây): ${own.join(', ')}`);
+    if (own?.length) lines.push(`- Thư mục thuộc team của bạn (chỉ sửa trong đây): ${describeFolders(own)}`);
+    else if (team.requiresFolders) lines.push('- Hồ sơ chưa khai thư mục cho team của bạn nên bạn KHÔNG ghi được file nào. Nếu việc cần ghi file, hãy dừng và báo lại điều này.');
     const others = Object.entries(project.folders).filter(([id, list]) => id !== team.id && list.length);
-    for (const [id, list] of others) lines.push(`- Thư mục của ${id} (không tự ý sửa): ${list.join(', ')}`);
+    for (const [id, list] of others) lines.push(`- Thư mục của ${id} (không tự ý sửa): ${describeFolders(list)}`);
     const commands = Object.entries(project.commands);
     if (commands.length) lines.push(`- Lệnh: ${commands.map(([k, v]) => `${k} = ${v}`).join('; ')}`);
     if (project.conventions) lines.push(`- Quy ước:\n${project.conventions}`);
     parts.push(lines.join('\n'));
   }
 
-  if (skills.length) {
+  if (skills.length && skillMode === 'native') {
+    // Engine tự nạp skill từ thư mục làm việc (không có công cụ Skill để gọi theo tên).
+    parts.push(
+      [
+        '## Skill của bạn',
+        'Công ty đã nạp sẵn các skill sau cho bạn. Chúng là cách làm đã được duyệt, không phải gợi ý tùy chọn:',
+        ...skills.map((s) => `- ${s}`),
+        'Trước khi bắt tay làm, hãy đọc kỹ từng skill liên quan tới việc này rồi làm theo. ' +
+          'Trước khi báo xong, dùng lại skill kiểm chứng/kiểm thử nếu có trong danh sách. Quy tắc riêng của công ty ở trên luôn được ưu tiên hơn chỉ dẫn của skill.',
+      ].join('\n'),
+    );
+  } else if (skills.length) {
     parts.push(
       [
         '## Skill của bạn',
@@ -123,108 +126,6 @@ export function buildTaskPrompt(task) {
   return lines.join('\n');
 }
 
-export function buildClaudeArgs({ task, role, project, systemFile, pluginDir, resume, settingsFile, mcpConfigFile = null, mcpTools = [] }) {
-  // Có gói skill thì agent cần công cụ "Skill" để nạp chúng (vì --tools chỉ liệt kê công cụ có sẵn).
-  const tools = pluginDir ? [...role.tools, 'Skill'] : role.tools;
-  const args = [
-    '-p',
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--model', role.model,
-    '--effort', role.effort,
-    '--tools', tools.join(','),
-    // Không dùng acceptEdits: chế độ đó tự cho phép lệnh Bash ghi file (echo > file, mkdir, touch) trong worktree,
-    // lách qua hook chặn thư mục. Edit và Write vẫn dùng được vì đã nằm trong --allowedTools; Bash chỉ chạy lệnh được khai.
-    '--permission-mode', 'default',
-    '--max-turns', String(role.max_turns),
-    // Bỏ cấu hình người dùng (hook, plugin của bạn) để không tốn hạn mức vào ngữ cảnh thừa.
-    // Không dùng --bare: chế độ đó chỉ nhận khóa API, không dùng được với gói Pro.
-    '--setting-sources', 'project,local',
-    '--strict-mcp-config',
-    '--append-system-prompt-file', systemFile,
-  ];
-  const allowed = buildAllowedTools(role, project);
-  if (pluginDir) allowed.push('Skill');
-  // Công cụ hỏi người khác của công ty (qua MCP): chỉ nạp khi có cấu hình.
-  if (mcpConfigFile) {
-    allowed.push(...mcpTools.map(mcpName));
-    args.push('--mcp-config', mcpConfigFile);
-  }
-  if (allowed.length) args.push('--allowedTools', allowed.join(','));
-  args.push('--disallowedTools', ALWAYS_DENIED.join(','));
-  if (pluginDir) args.push('--plugin-dir', pluginDir);
-  if (settingsFile) args.push('--settings', settingsFile);
-  if (resume && task.session_id) args.push('--resume', task.session_id);
-  return args;
-}
-
-/** Tham số cho lượt trả lời câu hỏi: chỉ đọc, không công cụ MCP, không Bash. */
-export function buildAnswerArgs({ model, effort, maxTurns, systemFile, settingsFile, session }) {
-  const args = [
-    '-p',
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--model', model,
-    '--effort', effort,
-    '--tools', 'Read,Grep,Glob',
-    '--permission-mode', 'default',
-    '--max-turns', String(maxTurns),
-    '--setting-sources', 'project,local',
-    '--strict-mcp-config',
-    '--settings', settingsFile,
-    '--append-system-prompt-file', systemFile,
-    '--allowedTools', 'Read,Grep,Glob',
-    '--disallowedTools', ALWAYS_DENIED.join(','),
-  ];
-  if (session) args.push('--resume', session);
-  return args;
-}
-
-// Lệnh git chỉ đọc mà Trưởng nhóm được tự chạy khi duyệt bài.
-const LEAD_GIT = ['git diff', 'git log', 'git show', 'git status'];
-
-/** Tham số cho lượt làm việc của Trưởng nhóm (lập kế hoạch hoặc duyệt bài): chỉ đọc + công cụ của công ty. */
-export function buildLeadArgs({ model, effort, maxTurns, systemFile, mcpConfigFile, settingsFile, mcpTools, session, extraBash = [] }) {
-  const allowed = [
-    'Read', 'Grep', 'Glob',
-    ...[...LEAD_GIT, ...extraBash].flatMap((c) => [`Bash(${c})`, `Bash(${c} *)`]),
-    ...mcpTools.map(mcpName),
-  ];
-  const args = [
-    '-p',
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--model', model,
-    '--effort', effort,
-    '--tools', 'Read,Grep,Glob,Bash',
-    '--max-turns', String(maxTurns),
-    '--setting-sources', 'project,local',
-    '--strict-mcp-config',
-    '--mcp-config', mcpConfigFile,
-    '--settings', settingsFile,
-    '--append-system-prompt-file', systemFile,
-    '--allowedTools', allowed.join(','),
-    '--disallowedTools', [...ALWAYS_DENIED, ...LEAD_GIT.map((c) => `Bash(${c} *--output*)`)].join(','),
-  ];
-  if (session) args.push('--resume', session);
-  return args;
-}
-
-/** Nội dung file --settings: hook PreToolUse chặn cứng file ngoài phạm vi (xem path-guard.mjs). */
-export function buildGuardSettings(guardScript) {
-  const script = guardScript.split('\\').join('/');
-  return {
-    hooks: {
-      PreToolUse: [
-        {
-          matcher: 'Edit|Write|MultiEdit|NotebookEdit|Read',
-          hooks: [{ type: 'command', command: `node "${script}"` }],
-        },
-      ],
-    },
-  };
-}
-
 export function guardEnv({ root, allow, mode }) {
   return {
     COMPANY_GUARD_ROOT: root,
@@ -273,6 +174,10 @@ export class Runner extends EventEmitter {
   constructor({ cfg, store, getTeams, getProject }) {
     super();
     this.cfg = cfg;
+    // Các engine đã liên kết theo thứ tự ưu tiên; this.engine là engine đầu tiên (mặc định). Mỗi lượt chạy dùng state.engine (xem engineFor).
+    this.engines = (cfg.engines ?? [cfg.engine]).map((id) => getEngine({ engine: id }));
+    this.engine = this.engines[0];
+    this.engineBlocked = {}; // mã engine -> giờ (ms) engine đó hết hạn mức hoặc không dùng được tới lúc nào
     this.store = store;
     this.getTeams = getTeams;
     this.getProject = getProject;
@@ -297,6 +202,17 @@ export class Runner extends EventEmitter {
     }
     // Việc đang chờ câu trả lời: khớp với các lượt trả lời đã kết thúc trong lúc máy chủ tắt.
     this.questions.reconcile();
+    // Danh sách engine do chủ chọn trên giao diện (nếu có) đè lên cấu hình; id không còn tồn tại thì bỏ qua.
+    const saved = this.store.getState('engines', null);
+    if (Array.isArray(saved) && saved.length) {
+      try {
+        this.applyEngines(saved);
+      } catch {
+        /* giữ danh sách theo cấu hình */
+      }
+    }
+    const blocked = this.store.getState('engine_blocked', {});
+    for (const [id, until] of Object.entries(blocked ?? {})) if (until > Date.now()) this.engineBlocked[id] = until;
     const resumeAt = this.store.getState('paused_until', 0);
     if (resumeAt > Date.now()) {
       this.pausedUntil = resumeAt;
@@ -335,6 +251,7 @@ export class Runner extends EventEmitter {
       pausedUntil: this.pausedUntil > Date.now() ? this.pausedUntil : 0,
       pauseReason: this.pausedUntil > Date.now() ? this.pauseReason : null,
       manualPause: this.manualPause,
+      engines: this.engines.map((e) => ({ id: e.id, label: e.label, blockedUntil: this.blockedUntil(e.id) })),
       rateLimit: this.store.getState('rate_limit'),
     };
   }
@@ -513,6 +430,66 @@ export class Runner extends EventEmitter {
     if (!this.manualPause) this.schedule();
   }
 
+  // ---- Nhiều engine (xoay vòng) ----
+
+  applyEngines(ids) {
+    const engines = ids.map((id) => getEngine({ engine: id }));
+    this.engines = engines;
+    this.engine = engines[0];
+    this.cfg.engines = engines.map((e) => e.id);
+    this.cfg.engine = this.engine.id;
+  }
+
+  /** Chủ đổi danh sách engine đã liên kết (và thứ tự ưu tiên) trên giao diện. Việc đang chạy giữ engine của nó tới khi xong. */
+  setEngines(ids) {
+    const list = [...new Set((Array.isArray(ids) ? ids : []).map(String))];
+    if (list.length === 0) throw new UserError('Phải liên kết ít nhất một engine.');
+    try {
+      this.applyEngines(list);
+    } catch (err) {
+      throw new UserError(err.message);
+    }
+    this.store.setState('engines', list);
+    this.emitState();
+    this.schedule();
+  }
+
+  /** Engine này có làm được loại lượt này không? Lượt của Trưởng nhóm/Giám đốc cần công cụ MCP của công ty. */
+  engineCanRun(engine, task) {
+    return task.kind === 'work' || task.kind === 'answer' || engine.capabilities.mcp;
+  }
+
+  blockedUntil(id, now = Date.now()) {
+    const until = this.engineBlocked[id] ?? 0;
+    return until > now ? until : 0;
+  }
+
+  blockEngine(id, until) {
+    this.engineBlocked[id] = until;
+    const live = Object.fromEntries(Object.entries(this.engineBlocked).filter(([, t]) => t > Date.now()));
+    this.store.setState('engine_blocked', live);
+  }
+
+  /** Giờ sớm nhất mà có engine dùng lại được, nếu MỌI engine đã liên kết đều đang bị chặn; không thì 0. */
+  allBlockedUntil(now = Date.now()) {
+    const times = this.engines.map((e) => this.blockedUntil(e.id, now));
+    return times.every((t) => t > 0) ? Math.min(...times) : 0;
+  }
+
+  /**
+   * Engine sẽ chạy một việc. Việc đã có phiên trên engine nào thì ưu tiên engine đó (làm tiếp được); engine đó đang bị chặn
+   * thì chuyển sang engine kế còn hạn mức. Không engine nào làm được loại lượt này thì trả engine mặc định để launch báo lỗi rõ.
+   * Có engine làm được nhưng tất cả đang bị chặn thì trả { engine: null, waitUntil } để việc chờ.
+   */
+  engineFor(task, now = Date.now()) {
+    const capable = this.engines.filter((e) => this.engineCanRun(e, task));
+    if (capable.length === 0) return { engine: this.engine, waitUntil: 0 };
+    const free = capable.filter((e) => !this.blockedUntil(e.id, now));
+    if (free.length === 0) return { engine: null, waitUntil: Math.min(...capable.map((e) => this.blockedUntil(e.id, now))) };
+    const sticky = task.session_id && task.engine ? free.find((e) => e.id === task.engine) : null;
+    return { engine: sticky ?? free[0], waitUntil: 0 };
+  }
+
   pauseCompany({ until, reason }) {
     this.pausedUntil = until;
     this.pauseReason = reason;
@@ -546,6 +523,11 @@ export class Runner extends EventEmitter {
         if (this.running.has(task.id) || (!answering && busy.has(task.member))) continue;
         if (task.resume_at && task.resume_at > now) {
           wakeAt = wakeAt ? Math.min(wakeAt, task.resume_at) : task.resume_at;
+          continue;
+        }
+        const pick = this.engineFor(task, now);
+        if (!pick.engine) {
+          wakeAt = wakeAt ? Math.min(wakeAt, pick.waitUntil) : pick.waitUntil;
           continue;
         }
         if (!answering) busy.add(task.member);
@@ -596,8 +578,15 @@ export class Runner extends EventEmitter {
     if (!found) return this.fail(task.id, `Không còn nhân viên "${task.member}" trong cấu hình team.`, 'no_member');
     const { team, member, role } = found;
     const project = this.getProject();
+    const pick = this.engineFor(task);
+    if (!pick.engine) {
+      // Mọi engine làm được việc này đều đang hết hạn mức: chờ (schedule sẽ thử lại khi một engine hồi).
+      this.update(task.id, { status: 'paused_quota', resume_at: pick.waitUntil });
+      this.schedule();
+      return undefined;
+    }
     const state = {
-      member: member.name, child: null, stopRequested: false, timedOut: false, quota: null, result: null,
+      engine: pick.engine, member: member.name, child: null, stopRequested: false, timedOut: false, quota: null, result: null,
       stderrTail: '', timer: null, token: null,
     };
     state.exited = new Promise((resolve) => {
@@ -605,8 +594,15 @@ export class Runner extends EventEmitter {
     });
     this.running.set(task.id, state);
 
-    const resume = Boolean(task.session_id);
+    // Việc chuyển từ engine khác sang (hết hạn mức): phiên cũ không dùng lại được giữa hai hãng, nên bắt đầu phiên mới
+    // trên cùng thư mục làm việc và dặn bàn giao trong lời nhắc.
+    const previous = task.handoff_from || task.engine;
+    const switched = Boolean(previous) && previous !== state.engine.id;
+    const resume = Boolean(task.session_id) && !switched;
     task = this.update(task.id, {
+      engine: state.engine.id,
+      handoff_from: null,
+      ...(switched ? { session_id: null } : {}),
       status: 'running',
       attempts: task.attempts + 1,
       resume_at: null,
@@ -626,7 +622,7 @@ export class Runner extends EventEmitter {
     if (task.level === 'auto') {
       this.log(task.id, 'system', 'Đang tự đánh giá độ khó của việc...');
       const verdict = await triageTask({
-        cfg: this.cfg, task, role, project, cwd: runDir,
+        cfg: this.cfg, engine: state.engine, task, role, project, cwd: runDir,
         onChild: (child) => {
           state.child = child;
         },
@@ -673,7 +669,7 @@ export class Runner extends EventEmitter {
     }
 
     // Công cụ hỏi người khác (qua MCP). Không có địa chỉ API (chạy ngoài máy chủ) thì nhân viên làm việc như cũ, không hỏi được.
-    const canAsk = Boolean(this.apiUrl);
+    const canAsk = Boolean(this.apiUrl) && state.engine.capabilities.mcp;
     let mcpConfigFile = null;
     const askTools = canAsk ? toolsForKind('work').map((t) => t.name) : [];
     if (canAsk) {
@@ -697,8 +693,10 @@ export class Runner extends EventEmitter {
 
     // Hook chặn cứng file ngoài phạm vi: nhân viên chỉ sửa được trong thư mục của team (nếu hồ sơ có khai).
     const settingsFile = path.join(runDir, 'settings.json');
-    fs.writeFileSync(settingsFile, JSON.stringify(buildGuardSettings(path.join(this.cfg.toolDir, 'server', 'path-guard.mjs')), null, 2));
+    fs.writeFileSync(settingsFile, JSON.stringify(state.engine.guardSettings(path.join(this.cfg.toolDir, 'server', 'path-guard.mjs')), null, 2));
     const allow = project?.folders?.[team.id] ?? [];
+    // Team chỉ ghi tài liệu (requires_folders): chưa khai thư mục thì không ghi được gì, thay vì ghi được mọi nơi.
+    const guardMode = team.requiresFolders ? 'scoped' : 'worker';
 
     const pack = composeSkillPack({
       libraryDir: path.join(this.cfg.skillsDir, 'library'),
@@ -713,9 +711,9 @@ export class Runner extends EventEmitter {
 
     // Viết system prompt sau khi biết skill nào thật sự được nạp, để dặn agent dùng đúng các skill đó.
     const systemFile = path.join(runDir, 'system.md');
-    fs.writeFileSync(systemFile, buildSystemPrompt({ member, team, role, project, canAsk, skills: pack.loaded }), 'utf8');
+    fs.writeFileSync(systemFile, buildSystemPrompt({ member, team, role, project, canAsk, skills: pack.loaded, skillMode: state.engine.skillMode }), 'utf8');
 
-    const args = buildClaudeArgs({
+    const args = state.engine.taskArgs({
       task, role: runRole, project, systemFile, pluginDir: pack.dir, resume, settingsFile, mcpConfigFile, mcpTools: askTools,
     });
     const feedback = task.review_feedback?.trim();
@@ -730,6 +728,14 @@ export class Runner extends EventEmitter {
       prompt = buildTaskPrompt(task);
     }
     if (feedback) this.update(task.id, { review_feedback: null });
+    if (switched && task.worktree) {
+      const from = this.engines.find((e) => e.id === previous)?.label ?? previous;
+      prompt = `${prompt}
+
+## Bàn giao từ engine khác
+Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. Phần đang dở có thể đã nằm sẵn trong thư mục làm việc hiện tại (file đã sửa, chưa commit). Hãy xem hiện trạng thư mục (đọc các file liên quan; nếu được phép chạy git status thì dùng) rồi làm tiếp phần còn thiếu, không làm lại từ đầu.`;
+      this.log(task.id, 'system', `Chuyển từ ${from} sang ${state.engine.label}: làm tiếp trên cùng thư mục làm việc (phiên cũ không dùng lại được giữa hai engine).`);
+    }
     // Lời dặn của chủ khi cho làm tiếp hoặc làm lại một việc đã lỗi.
     const guidance = task.owner_guidance?.trim();
     if (guidance) {
@@ -745,12 +751,19 @@ export class Runner extends EventEmitter {
       this.log(task.id, 'system', 'Làm tiếp cùng câu trả lời cho câu hỏi đã gửi.');
     }
     this.log(task.id, 'system', feedback ? `Làm lại theo nhận xét của Trưởng nhóm (lần ${task.revisions}).` : resume ? 'Làm tiếp phiên trước (--resume).' : 'Bắt đầu làm việc.');
+    // Engine không có cờ dòng lệnh cho hook chặn file, skill, lời nhắc hệ thống... thì tự đặt chúng vào thư mục làm việc (prepare).
+    const prepared = state.engine.prepare?.({
+      cwd: task.worktree, runDir, readonly: false, guardMode, root: task.worktree, allow, prompt,
+      commands: role.tools.includes('Bash') ? project?.allowedCommands ?? [] : [],
+      systemText: fs.readFileSync(systemFile, 'utf8'), skillsDir: pack.dir,
+    });
     this.track(task, state, {
-      cwd: task.worktree,
-      args,
-      prompt,
-      env: { ...sanitizedEnv(), ...guardEnv({ root: task.worktree, allow, mode: 'worker' }) },
+      cwd: prepared?.cwd ?? task.worktree,
+      args: [...args, ...(prepared?.args ?? [])],
+      prompt: prepared ? '' : prompt,
+      env: { ...state.engine.env(), ...guardEnv({ root: task.worktree, allow, mode: guardMode }) },
       timeoutMinutes: runRole.timeout_minutes,
+      maxTurns: state.engine.capabilities.maxTurns ? null : runRole.max_turns,
     });
     return undefined;
   }
@@ -780,6 +793,9 @@ export class Runner extends EventEmitter {
     const epic = director ? this.store.getEpic(task.epic_id) : null;
     const job = director ? null : this.store.getJob(task.job_id);
     if (director ? !epic : !job) return this.fail(task.id, 'Không tìm thấy việc lớn hoặc yêu cầu của lượt này.');
+    if (!state.engine.capabilities.mcp) {
+      return this.fail(task.id, `Engine ${state.engine.id} chưa chạy được lượt của Trưởng nhóm hoặc Giám đốc (cần công cụ MCP của công ty). Dùng engine claude cho lượt này.`, 'engine_unsupported');
+    }
     if (!this.apiUrl) return this.fail(task.id, 'Máy chủ chưa sẵn sàng nhận công cụ của Trưởng nhóm (thiếu địa chỉ API).');
     const review = task.kind === 'review' || task.kind === 'dreview';
 
@@ -830,11 +846,11 @@ export class Runner extends EventEmitter {
       }, null, 2),
     );
     const settingsFile = path.join(runDir, 'settings.json');
-    fs.writeFileSync(settingsFile, JSON.stringify(buildGuardSettings(path.join(this.cfg.toolDir, 'server', 'path-guard.mjs')), null, 2));
+    fs.writeFileSync(settingsFile, JSON.stringify(state.engine.guardSettings(path.join(this.cfg.toolDir, 'server', 'path-guard.mjs')), null, 2));
 
     // Lượt đã được chủ cho chạy lại thì có thêm lượt và thời gian (giống việc của nhân viên).
     const stretch = stretchOf(task);
-    const args = buildLeadArgs({
+    const args = state.engine.leadArgs({
       model: task.model, effort: task.effort, maxTurns: Math.ceil((review ? role.review_max_turns : role.max_turns) * stretch),
       systemFile, mcpConfigFile, settingsFile, mcpTools, session: resume ? task.session_id : null,
       // Duyệt bài được chạy lệnh test của dự án để kiểm chứng báo cáo của nhân viên; lập kế hoạch thì không cần.
@@ -852,7 +868,7 @@ export class Runner extends EventEmitter {
       cwd,
       args,
       prompt,
-      env: { ...sanitizedEnv(), ...guardEnv({ root: cwd, allow: [], mode: 'readonly' }) },
+      env: { ...state.engine.env(), ...guardEnv({ root: cwd, allow: [], mode: 'readonly' }) },
       timeoutMinutes: Math.ceil(role.timeout_minutes * stretch),
     });
     return undefined;
@@ -866,25 +882,31 @@ export class Runner extends EventEmitter {
     const systemFile = path.join(runDir, 'system.md');
     fs.writeFileSync(systemFile, buildAnswerSystemPrompt({ member, team, role, project }), 'utf8');
     const settingsFile = path.join(runDir, 'settings.json');
-    fs.writeFileSync(settingsFile, JSON.stringify(buildGuardSettings(path.join(this.cfg.toolDir, 'server', 'path-guard.mjs')), null, 2));
-    const args = buildAnswerArgs({
+    fs.writeFileSync(settingsFile, JSON.stringify(state.engine.guardSettings(path.join(this.cfg.toolDir, 'server', 'path-guard.mjs')), null, 2));
+    const args = state.engine.answerArgs({
       model: task.model, effort: task.effort, maxTurns: ANSWER_MAX_TURNS, systemFile, settingsFile, session: resume ? task.session_id : null,
     });
     if (this.abortIfStopped(task.id, state)) return undefined;
     this.log(task.id, 'system', resume ? 'Làm tiếp phiên trước (--resume).' : 'Bắt đầu trả lời câu hỏi.');
+    const prompt = resume ? 'Hãy tiếp tục và trả lời câu hỏi theo đúng yêu cầu ban đầu.' : task.prompt;
+    const prepared = state.engine.prepare?.({
+      cwd, runDir, readonly: true, root: cwd, allow: [], prompt, systemText: fs.readFileSync(systemFile, 'utf8'),
+    });
     this.track(task, state, {
-      cwd,
-      args,
-      prompt: resume ? 'Hãy tiếp tục và trả lời câu hỏi theo đúng yêu cầu ban đầu.' : task.prompt,
-      env: { ...sanitizedEnv(), ...guardEnv({ root: cwd, allow: [], mode: 'readonly' }) },
+      cwd: prepared?.cwd ?? cwd,
+      args: [...args, ...(prepared?.args ?? [])],
+      prompt: prepared ? '' : prompt,
+      env: { ...state.engine.env(), ...guardEnv({ root: cwd, allow: [], mode: 'readonly' }) },
       timeoutMinutes: this.cfg.answerTimeoutMinutes ?? 5,
+      maxTurns: state.engine.capabilities.maxTurns ? null : ANSWER_MAX_TURNS,
     });
     return undefined;
   }
 
   /** Chạy tiến trình `claude`, đọc luồng sự kiện và gọi finalize khi nó kết thúc. */
-  track(task, state, { cwd, args, prompt, env, timeoutMinutes }) {
-    const child = spawn(this.cfg.claudeBin, [...this.cfg.claudeArgsPrefix, ...args], {
+  track(task, state, { cwd, args, prompt, env, timeoutMinutes, maxTurns = null }) {
+    const { bin, prefix } = state.engine.command(this.cfg);
+    const child = spawn(bin, [...prefix, ...args], {
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -892,6 +914,7 @@ export class Runner extends EventEmitter {
       detached: process.platform !== 'win32',
     });
     state.child = child;
+    state.maxTurns = maxTurns;
     state.timer = setTimeout(() => {
       state.timedOut = true;
       killTree(child);
@@ -919,8 +942,9 @@ export class Runner extends EventEmitter {
     child.on('error', (err) => {
       if (state.closed) return;
       state.closed = true;
-      const hint = err.code === 'ENOENT' ? ` Không tìm thấy lệnh "${this.cfg.claudeBin}". Hãy kiểm tra Claude Code đã cài chưa.` : '';
-      this.fail(task.id, `Không chạy được claude: ${err.message}.${hint}`, err.code === 'ENOENT' ? 'no_claude' : 'internal');
+      if (err.code === 'ENOENT' && this.rerouteMissing(task, state)) return;
+      const hint = err.code === 'ENOENT' ? state.engine.missingHint(this.cfg) : '';
+      this.fail(task.id, `Không chạy được ${state.engine.id}: ${err.message}.${hint}`, err.code === 'ENOENT' ? 'no_claude' : 'internal');
       state.resolveExit();
     });
     child.on('close', (code, signal) => {
@@ -933,14 +957,37 @@ export class Runner extends EventEmitter {
     });
   }
 
+  /**
+   * Lệnh của engine không có trên máy: nếu còn engine khác làm được việc này thì coi engine đó "không dùng được" một lúc
+   * (10 phút, rồi thử lại phòng khi bạn vừa cài) và xếp việc lại để chạy bằng engine khác. Trả về true nếu đã xếp lại.
+   */
+  rerouteMissing(task, state) {
+    if (this.engines.length < 2 || this.stopped) return false;
+    this.blockEngine(state.engine.id, Date.now() + 10 * 60_000);
+    const current = this.store.getTask(task.id);
+    const next = this.engineFor({ ...current, session_id: null, engine: null });
+    if (!next.engine || next.engine === state.engine) return false;
+    clearTimeout(state.timer);
+    if (state.token) this.agentRuns.delete(state.token);
+    this.running.delete(task.id);
+    this.update(task.id, { status: 'queued', engine: null, resume_at: null });
+    this.log(task.id, 'warn', `Không tìm thấy lệnh của ${state.engine.label} trên máy này. Chuyển việc sang ${next.engine.label}.`);
+    state.resolveExit();
+    this.schedule();
+    return true;
+  }
+
+  /** Một dòng đầu ra của CLI: engine đổi nó thành các sự kiện dạng Claude, rồi runner xử lý từng sự kiện. */
   handleLine(taskId, state, line) {
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
+    const messages = state.engine.parseLine(line, (state.parseState ??= {}));
+    if (!messages) {
       this.log(taskId, 'raw', shorten(line, 200));
       return;
     }
+    for (const msg of messages) this.handleMessage(taskId, state, msg, line);
+  }
+
+  handleMessage(taskId, state, msg, line) {
     switch (msg.type) {
       case 'system':
         if (msg.subtype === 'init') {
@@ -959,6 +1006,7 @@ export class Runner extends EventEmitter {
       case 'assistant': {
         const task = this.store.getTask(taskId);
         this.update(taskId, { turns: (task?.turns ?? 0) + 1 });
+        this.enforceTurnLimit(state);
         for (const block of msg.message?.content ?? []) {
           if (block.type === 'text' && block.text?.trim()) this.log(taskId, 'say', shorten(block.text, 600));
           else if (block.type === 'tool_use') this.log(taskId, 'tool', toolSummary(block));
@@ -987,11 +1035,28 @@ export class Runner extends EventEmitter {
         break;
       }
       case 'result':
-        state.result = msg;
+        if (!state.turnLimitHit) state.result = msg;
         break;
       default:
         break;
     }
+  }
+
+  /**
+   * CLI không có --max-turns (agy): runner tự đếm lượt trả lời của lần chạy này và dừng khi vượt, rồi coi như "hết số lượt"
+   * để luồng nâng bậc model và làm tiếp hoạt động y như với Claude.
+   */
+  enforceTurnLimit(state) {
+    if (!state.maxTurns || state.turnLimitHit) return;
+    const scratch = state.parseState ?? {};
+    state.turnCount = (state.turnCount ?? 0) + 1;
+    if (state.turnCount <= state.maxTurns) return;
+    state.turnLimitHit = true;
+    state.result = {
+      type: 'result', subtype: 'error_max_turns', is_error: true, num_turns: state.maxTurns,
+      result: `Đã vượt ${state.maxTurns} lượt cho phép.`, usage: scratch.usage ?? {}, total_cost_usd: 0,
+    };
+    killTree(state.child);
   }
 
   async finalize(taskId, state, code, signal) {
@@ -1015,6 +1080,11 @@ export class Runner extends EventEmitter {
     };
 
     const succeeded = res && res.subtype === 'success' && !res.is_error;
+    if (!succeeded && !state.quota) {
+      // Engine không phát sự kiện rate_limit_event thì tự nhận ra hết hạn mức từ lỗi.
+      const detected = state.engine.detectQuota?.({ res, stderrTail: state.stderrTail, code });
+      if (detected) state.quota = detected;
+    }
     const quotaHit =
       !succeeded &&
       (Boolean(state.quota?.blocked) ||
@@ -1033,10 +1103,25 @@ export class Runner extends EventEmitter {
         now,
         marginMs: this.cfg.quotaMarginMs,
       });
-      this.update(taskId, { ...totals, status: 'paused_quota', resume_at: resumeAt, error: null });
-      this.pauseCompany({ until: resumeAt, reason: 'quota' });
+      // Engine này hết hạn mức tới `resumeAt`. Còn engine khác làm được việc này thì chuyển ngay sang đó (xoay vòng),
+      // không thì việc chờ; cả công ty chỉ nghỉ khi MỌI engine đã liên kết đều hết.
+      this.blockEngine(state.engine.id, resumeAt);
+      const name = state.engine.id === 'claude' ? 'Pro' : state.engine.label;
       const when = new Date(resumeAt).toLocaleTimeString('vi-VN');
-      this.log(taskId, 'quota', `Hết hạn mức Pro. Cả công ty tạm nghỉ, sẽ làm tiếp lúc ${when}.`);
+      const next = this.engineFor({ ...task, session_id: null, engine: null }, now);
+      if (next.engine && next.engine !== state.engine) {
+        this.update(taskId, { ...totals, status: 'queued', resume_at: null, handoff_from: state.engine.id, error: null });
+        this.log(taskId, 'quota', `Hết hạn mức ${name} (hồi lúc ${when}). Chuyển việc sang ${next.engine.label} và làm tiếp.`);
+      } else {
+        this.update(taskId, { ...totals, status: 'paused_quota', resume_at: resumeAt, error: null });
+        const allUntil = this.allBlockedUntil(now);
+        if (allUntil) {
+          this.pauseCompany({ until: allUntil, reason: 'quota' });
+          this.log(taskId, 'quota', `Hết hạn mức ${name}. Cả công ty tạm nghỉ, sẽ làm tiếp lúc ${new Date(allUntil).toLocaleTimeString('vi-VN')}.`);
+        } else {
+          this.log(taskId, 'quota', `Hết hạn mức ${name}. Việc này cần engine ${state.engine.label}, sẽ làm tiếp lúc ${when} (các engine khác vẫn chạy việc khác).`);
+        }
+      }
     } else if (succeeded && leadRun) {
       // Lượt của Trưởng nhóm không sửa file nên không có gì để commit.
       this.update(taskId, {
@@ -1055,7 +1140,7 @@ export class Runner extends EventEmitter {
         const committed = await commitWorktree({
           dir: task.worktree,
           message: `company: ${task.title}\n\nViệc #${task.id} do ${task.member} (${task.role}) làm.`,
-          exclude: project?.worktreeLinks ?? [],
+          exclude: [...(project?.worktreeLinks ?? []), ...state.engine.workspaceExcludes],
         });
         changedFiles = committed.changedFiles;
       } catch (err) {
@@ -1092,7 +1177,7 @@ export class Runner extends EventEmitter {
         reason = `Kết thúc không thành công (${res.subtype ?? 'lỗi'}${res.terminal_reason ? `, ${res.terminal_reason}` : ''}): ${shorten(String(res.result ?? ''), 300)}`;
         failureCode = res.subtype === 'error_max_turns' ? 'max_turns' : 'error_result';
       } else {
-        reason = `Tiến trình claude thoát bất thường (mã ${code ?? '?'}${signal ? `, tín hiệu ${signal}` : ''}). ${shorten(state.stderrTail, 300)}`;
+        reason = `Tiến trình ${state.engine.id} thoát bất thường (mã ${code ?? '?'}${signal ? `, tín hiệu ${signal}` : ''}). ${shorten(state.stderrTail, 300)}`;
         failureCode = 'crash';
       }
       // Tiến trình tự thoát (mạng chập chờn, máy ngủ đông...) thường qua khỏi nếu thử lại: tự làm tiếp đúng phiên cũ MỘT lần,
@@ -1111,7 +1196,7 @@ export class Runner extends EventEmitter {
           changedFiles = (await commitWorktree({
             dir: task.worktree,
             message: `company (chưa xong): ${task.title}\n\nViệc #${task.id}`,
-            exclude: project?.worktreeLinks ?? [],
+            exclude: [...(project?.worktreeLinks ?? []), ...state.engine.workspaceExcludes],
           })).changedFiles;
         } catch {
           /* giữ nguyên worktree để người dùng xem */

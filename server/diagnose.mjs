@@ -36,6 +36,11 @@ const COPY = {
     cause: 'Máy không tìm thấy lệnh claude. Hãy cài hoặc đăng nhập Claude Code (chạy "claude" trong terminal), rồi bấm Làm lại.',
     recommended: 'redo',
   },
+  engine_unsupported: {
+    title: 'Engine hiện tại chưa làm được lượt này',
+    cause: 'Lượt của Trưởng nhóm hoặc Giám đốc cần công cụ MCP của công ty, mà engine đang chọn (ví dụ Antigravity) chưa có. Đổi sang engine claude cho lượt này rồi bấm Làm lại.',
+    recommended: 'redo',
+  },
   no_member: {
     title: 'Nhân viên không còn trong cấu hình',
     cause: 'Người được giao việc đã bị xóa hoặc đổi tên trong thư mục teams. Việc này không chạy tiếp được.',
@@ -69,7 +74,8 @@ export function inferCode(error) {
   if (/Bị trả bài quá/.test(text)) return 'rejected_final';
   if (/không đưa ra được kết luận/.test(text)) return 'review_no_verdict';
   if (/Kết thúc không thành công/.test(text)) return 'error_result';
-  if (/Lỗi nội bộ|Lỗi khi kết thúc việc|Không chạy được claude/.test(text)) return 'internal';
+  if (/chưa chạy được lượt của Trưởng nhóm/.test(text)) return 'engine_unsupported';
+  if (/Lỗi nội bộ|Lỗi khi kết thúc việc|Không chạy được (claude|agy|codex)/.test(text)) return 'internal';
   return 'other';
 }
 

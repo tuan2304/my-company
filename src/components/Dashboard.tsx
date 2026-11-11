@@ -3,14 +3,15 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, reloadForLogin } from '@/lib/api';
-import { EPIC_STATUS_LABEL, JOB_STATUS_LABEL, STATUS_LABEL } from '@/lib/format';
+import { EPIC_STATUS_LABEL, JOB_STATUS_LABEL } from '@/lib/format';
 import { chime, newKeys, notifyMessage, readNotifyMode, readSoundPreference, titleFor, writeNotifyMode, writeSoundPreference, type NotifyMode } from '@/lib/notify';
 import { disableNotifications, enableNotifications, notificationsSupported, resyncPush, showLocalNotification } from '@/lib/push';
 import { ownerRequests } from '@/office/status';
 import { setTheme, useTheme } from '@/lib/theme';
-import type { AppState, CompanyState, Epic, Job, Task, TaskEvent } from '@/lib/types';
+import type { AppState, CompanyState, EngineInfo, Epic, Job, Task, TaskEvent } from '@/lib/types';
 import Board from './Board';
 import EpicDetail from './EpicDetail';
+import EnginesPanel from './EnginesPanel';
 import EpicForm from './EpicForm';
 import FeedPanel from './FeedPanel';
 import JobDetail from './JobDetail';
@@ -21,6 +22,7 @@ import Schedules from './Schedules';
 import TaskDetail from './TaskDetail';
 import TaskForm from './TaskForm';
 import TeamLoadPanel from './TeamLoadPanel';
+import WorkPanel, { type Crumb } from './WorkPanel';
 import { Drawer, Icon, Overlay, type IconName } from './ui';
 
 // Cảnh 3D chỉ chạy ở trình duyệt và khá nặng (three.js) nên chỉ tải khi bạn mở tab này.
@@ -50,7 +52,7 @@ function errorText(err: unknown): string {
 }
 
 type Mode = 'epic' | 'job' | 'task';
-type Panel = 'work' | 'board' | 'load' | 'schedules' | 'report' | 'usage' | null;
+type Panel = 'work' | 'board' | 'load' | 'schedules' | 'report' | 'usage' | 'engines' | null;
 type EpicAction = 'approve-plan' | 'reject-plan' | 'approve-result' | 'reject-result' | 'stop';
 
 const NAV: { id: Exclude<Panel, null>; label: string; icon: IconName }[] = [
@@ -60,6 +62,7 @@ const NAV: { id: Exclude<Panel, null>; label: string; icon: IconName }[] = [
   { id: 'schedules', label: 'Mẫu & lịch', icon: 'calendar' },
   { id: 'report', label: 'Báo cáo', icon: 'report' },
   { id: 'usage', label: 'Mức dùng', icon: 'gauge' },
+  { id: 'engines', label: 'Liên kết AI', icon: 'link' },
 ];
 
 export default function Dashboard() {
@@ -68,6 +71,7 @@ export default function Dashboard() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [epics, setEpics] = useState<Epic[]>([]);
+  const [engines, setEngines] = useState<EngineInfo[]>([]);
   const [panel, setPanel] = useState<Panel>(null);
   const [adding, setAdding] = useState(false);
   const [feedOpen, setFeedOpen] = useState(false);
@@ -217,6 +221,20 @@ export default function Dashboard() {
     return () => clearTimeout(timer);
   }, [refresh]);
 
+  // Các AI đã liên kết và model thật của chúng (hiện trong văn phòng, form giao việc, trang Liên kết AI). Không có thì UI vẫn chạy như cũ.
+  const loadEngines = useCallback(async (fresh = false) => {
+    const data = await api<{ engines: EngineInfo[] }>(`/api/engines${fresh ? '?refresh=1' : ''}`);
+    setEngines(data.engines);
+  }, []);
+  useEffect(() => {
+    const first = setTimeout(() => void loadEngines().catch(() => {}), 0);
+    const again = setInterval(() => void loadEngines().catch(() => {}), 60_000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(again);
+    };
+  }, [loadEngines]);
+
   useEffect(() => {
     const source = new EventSource('/api/stream');
     let wasDown = false;
@@ -340,8 +358,6 @@ export default function Dashboard() {
   const epicJobs = useMemo(() => jobs.filter((j) => j.epic_id === selectedEpicId).sort((a, b) => a.id - b.id), [jobs, selectedEpicId]);
   const directorTasks = useMemo(() => tasks.filter((t) => t.epic_id === selectedEpicId).sort((a, b) => a.id - b.id), [tasks, selectedEpicId]);
   const jobTasks = useMemo(() => tasks.filter((t) => t.job_id === selectedJobId).sort((a, b) => a.id - b.id), [tasks, selectedJobId]);
-  const looseJobs = useMemo(() => jobs.filter((j) => j.epic_id === null), [jobs]);
-  const looseTasks = useMemo(() => tasks.filter((t) => t.job_id === null && t.epic_id === null), [tasks]);
   const signature = useMemo(
     () => [...tasks.map((t) => `${t.id}:${t.status}`), ...jobs.map((j) => `j${j.id}:${j.status}`), ...epics.map((e) => `e${e.id}:${e.status}`)].join(','),
     [tasks, jobs, epics],
@@ -363,6 +379,13 @@ export default function Dashboard() {
     return out;
   }, [tasks, eventsByTask]);
   const requests = useMemo(() => ownerRequests(epics, jobs, tasks), [epics, jobs, tasks]);
+  // Chuỗi đang xem ở bảng Công việc, suy từ dữ liệu (không từ các id đã chọn) để luôn đúng dù mở việc từ đâu: yêu cầu > việc lớn > việc.
+  const chain = useMemo(() => {
+    const job = selectedTask ? jobs.find((j) => j.id === selectedTask.job_id) ?? null : selectedJob;
+    const epicId = selectedTask ? job?.epic_id ?? selectedTask.epic_id : selectedJob ? selectedJob.epic_id : selectedEpic?.id ?? null;
+    const epic = epicId !== null && epicId !== undefined ? epics.find((e) => e.id === epicId) ?? null : null;
+    return { epic, job, task: selectedTask };
+  }, [epics, jobs, selectedEpic, selectedJob, selectedTask]);
   const activeCount = company ? company.running.length : 0;
   const usagePct = useMemo(() => {
     const values = Object.values(company?.rateLimit?.windows ?? {}).map((w) => w.utilization).filter((u): u is number => u !== null);
@@ -408,6 +431,7 @@ export default function Dashboard() {
             jobs={jobs}
             epics={epics}
             lastTool={lastTool}
+            engines={engines}
             pausedUntil={company?.pausedUntil ?? 0}
             now={now}
             onOpenTask={openTaskFromAnywhere}
@@ -605,14 +629,27 @@ export default function Dashboard() {
             <JobForm teams={workTeams} disabled={blocked} onCreated={(job) => { setJobs((prev) => upsertById(prev, job)); setAdding(false); setPanel('work'); void selectJob(job.id); }} />
           )}
           {app && mode === 'task' && (
-            <TaskForm teams={app.teams} disabled={blocked} onCreated={(t) => { setTasks((prev) => upsertById(prev, t)); setAdding(false); setPanel('work'); selectLooseTask(t.id); }} />
+            <TaskForm teams={app.teams} engines={engines} disabled={blocked} onCreated={(t) => { setTasks((prev) => upsertById(prev, t)); setAdding(false); setPanel('work'); selectLooseTask(t.id); }} />
           )}
         </Overlay>
       )}
 
       {panel === 'usage' && company && (
-        <Overlay title="Mức dùng hạn mức Pro" onClose={() => setPanel(null)}>
+        <Overlay title="Mức dùng hạn mức" onClose={() => setPanel(null)}>
           <QuotaPanel company={company} now={now} />
+        </Overlay>
+      )}
+      {panel === 'engines' && (
+        <Overlay title="Liên kết AI" size="lg" onClose={() => setPanel(null)}>
+          <EnginesPanel
+            engines={engines}
+            now={now}
+            onChange={(list) => {
+              setEngines(list);
+              void refresh();
+            }}
+            onRecheck={() => loadEngines(true)}
+          />
         </Overlay>
       )}
       {panel === 'board' && app && (
@@ -645,90 +682,57 @@ export default function Dashboard() {
 
       {panel === 'work' && (
         <Overlay title="Công việc" size="xl" onClose={() => setPanel(null)}>
-          <div className="work-grid">
-            <section className="col work-list" aria-label="Danh sách việc">
-              <div className="list">
-                <h2>Yêu cầu ({epics.length})</h2>
-                {epics.length === 0 && <p className="muted">Chưa có yêu cầu nào.</p>}
-                <ul>
-                  {epics.map((e) => (
-                    <li key={e.id}>
-                      <button type="button" className={`row ${e.id === selectedEpicId ? 'selected' : ''}`} onClick={() => void selectEpic(e.id)}>
-                        <span className="row-title">#{e.id} {e.title}</span>
-                        <span className="row-sub">Giám đốc {e.director}</span>
-                        <span className={`chip epic-${e.status}`}>{EPIC_STATUS_LABEL[e.status]}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <div className="list">
-                <h2>Việc lớn của một team ({looseJobs.length})</h2>
-                {looseJobs.length === 0 && <p className="muted">Chưa có việc lớn nào.</p>}
-                <ul>
-                  {looseJobs.map((j) => (
-                    <li key={j.id}>
-                      <button type="button" className={`row ${j.id === selectedJobId && selectedEpicId === null ? 'selected' : ''}`} onClick={() => void selectJob(j.id)}>
-                        <span className="row-title">#{j.id} {j.title}</span>
-                        <span className="row-sub">Trưởng nhóm {j.lead}</span>
-                        <span className={`chip job-${j.status}`}>{JOB_STATUS_LABEL[j.status]}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <div className="list">
-                <h2>Việc lẻ ({looseTasks.length})</h2>
-                {looseTasks.length === 0 && <p className="muted">Chưa có việc lẻ nào.</p>}
-                <ul>
-                  {looseTasks.map((t) => (
-                    <li key={t.id}>
-                      <button type="button" className={`row ${t.id === selectedTaskId && selectedJobId === null && selectedEpicId === null ? 'selected' : ''}`} onClick={() => selectLooseTask(t.id)}>
-                        <span className="row-title">#{t.id} {t.title}</span>
-                        <span className="row-sub">{t.member}</span>
-                        <span className={`chip status-${t.status}`}>{STATUS_LABEL[t.status]}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </section>
-
-            <section className="col work-detail" aria-label="Chi tiết">
-              {selectedEpic && (
-                <EpicDetail
-                  epic={selectedEpic}
-                  jobs={epicJobs}
-                  directorTasks={directorTasks}
-                  selectedJobId={selectedJobId}
-                  selectedTaskId={selectedTaskId}
-                  onSelectJob={(id) => void selectJob(id, true)}
-                  onSelectTask={(id) => { setSelectedJobId(null); void selectTask(id); }}
-                  onAct={(action, feedback) => actEpic(selectedEpic.id, action, feedback)}
-                />
-              )}
-              {selectedJob && (
-                <JobDetail
-                  job={selectedJob}
-                  tasks={jobTasks}
-                  selectedTaskId={selectedTaskId}
-                  onSelectTask={(id) => void selectTask(id)}
-                  onStop={(id) => void act(`/api/jobs/${id}/stop`)}
-                  onReplan={(id) => void act(`/api/jobs/${id}/replan`)}
-                />
-              )}
-              {(selectedTask || (!selectedJob && !selectedEpic)) && (
-                <TaskDetail
-                  task={selectedTask}
-                  events={selectedTask ? eventsByTask[selectedTask.id] ?? [] : []}
-                  now={now}
-                  onStop={(id) => void act(`/api/tasks/${id}/stop`)}
-                />
-              )}
-            </section>
-          </div>
+          <WorkPanel
+            epics={epics}
+            jobs={jobs}
+            tasks={tasks}
+            needs={requests}
+            now={now}
+            selected={selectedTask ? { kind: 'task', id: selectedTask.id } : selectedJob ? { kind: 'job', id: selectedJob.id } : selectedEpic ? { kind: 'epic', id: selectedEpic.id } : null}
+            selectedRoot={chain.epic ? { kind: 'epic', id: chain.epic.id } : chain.job ? { kind: 'job', id: chain.job.id } : chain.task ? { kind: 'task', id: chain.task.id } : null}
+            onOpen={(item) => {
+              if (item.kind === 'epic') void selectEpic(item.id);
+              else if (item.kind === 'job') void selectJob(item.id);
+              else openTaskFromAnywhere(item.id);
+            }}
+            crumbs={[
+              ...(chain.epic ? [{ key: `e${chain.epic.id}`, label: `Yêu cầu #${chain.epic.id}`, onClick: chain.job || chain.task ? () => void selectEpic(chain.epic!.id) : undefined }] : []),
+              ...(chain.job ? [{ key: `j${chain.job.id}`, label: `Việc lớn #${chain.job.id}`, onClick: chain.task ? () => void selectJob(chain.job!.id, true) : undefined }] : []),
+              ...(chain.task ? [{ key: `t${chain.task.id}`, label: `Việc #${chain.task.id}` }] : []),
+            ] satisfies Crumb[]}
+          >
+            {selectedTask ? (
+              <TaskDetail
+                task={selectedTask}
+                engines={engines}
+                events={eventsByTask[selectedTask.id] ?? []}
+                now={now}
+                onStop={(id) => void act(`/api/tasks/${id}/stop`)}
+              />
+            ) : selectedJob ? (
+              <JobDetail
+                job={selectedJob}
+                tasks={jobTasks}
+                selectedTaskId={selectedTaskId}
+                onSelectTask={(id) => void selectTask(id)}
+                onStop={(id) => void act(`/api/jobs/${id}/stop`)}
+                onReplan={(id) => void act(`/api/jobs/${id}/replan`)}
+              />
+            ) : selectedEpic ? (
+              <EpicDetail
+                epic={selectedEpic}
+                jobs={epicJobs}
+                directorTasks={directorTasks}
+                selectedJobId={selectedJobId}
+                selectedTaskId={selectedTaskId}
+                onSelectJob={(id) => void selectJob(id, true)}
+                onSelectTask={(id) => { setSelectedJobId(null); void selectTask(id); }}
+                onAct={(action, feedback) => actEpic(selectedEpic.id, action, feedback)}
+              />
+            ) : (
+              <TaskDetail task={null} events={[]} now={now} onStop={() => {}} />
+            )}
+          </WorkPanel>
         </Overlay>
       )}
     </main>

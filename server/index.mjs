@@ -5,6 +5,7 @@ import { toolsForKind } from './agent-tools.mjs';
 import { Auth, sessionCookie, sessionTokenFrom } from './auth.mjs';
 import { openDb } from './db.mjs';
 import { runDoctor } from './doctor.mjs';
+import { detectEngines } from './engines/index.mjs';
 import { ensureDirs } from './config.mjs';
 import { inspect as inspectIntegration, integrate as integrateIntoProject } from './integrate.mjs';
 import { inspectEpicFailure, recoverEpic } from './epic-recovery.mjs';
@@ -174,6 +175,7 @@ export async function startServer({ cfg, dev = false, withUi = true, uiHandler =
     return sendJson(res, 401, { error: 'PIN không đúng.', remaining: result.remaining });
   }
 
+  let enginesCache = null;
   async function handleApi(req, res, url, ctx = { remote: false }) {
     const { pathname } = url;
     const method = req.method ?? 'GET';
@@ -264,6 +266,36 @@ export async function startServer({ cfg, dev = false, withUi = true, uiHandler =
         company: runner.snapshot(),
         configError: config.error,
       });
+    }
+
+    // Các engine AI (Claude, Antigravity...): đã cài/đăng nhập chưa, model thật, đang bị chặn tới khi nào. Kết quả giữ 30 giây vì agy gọi mạng.
+    if (method === 'GET' && pathname === '/api/engines') {
+      const fresh = url.searchParams.get('refresh') === '1';
+      if (fresh || !enginesCache || Date.now() - enginesCache.at > 30_000) {
+        enginesCache = { at: Date.now(), engines: await detectEngines(cfg, { blocked: runner.engineBlocked }) };
+      }
+      const blocked = runner.engineBlocked;
+      const engines = enginesCache.engines.map((e) => ({ ...e, blockedUntil: (blocked[e.id] ?? 0) > Date.now() ? blocked[e.id] : 0 }));
+      return sendJson(res, 200, { engines, order: cfg.engines ?? [cfg.engine] });
+    }
+
+    // Liên kết AI: chủ chọn engine nào dùng và thứ tự ưu tiên. Chỉ cho liên kết engine đã cài (và không báo "chưa đăng nhập").
+    if (method === 'POST' && pathname === '/api/engines') {
+      const body = await readJson(req);
+      const order = Array.isArray(body.order) ? body.order.map(String) : [];
+      const info = await detectEngines(cfg, { blocked: runner.engineBlocked });
+      for (const id of order) {
+        const found = info.find((e) => e.id === id);
+        if (!found) throw new UserError(`Engine "${id}" không tồn tại.`);
+        if (!found.installed) throw new UserError(`${found.label} chưa cài hoặc không chạy được lệnh. ${found.detail}`.trim());
+        if (found.loggedIn === false) throw new UserError(`${found.label} chưa đăng nhập. ${found.detail}`.trim());
+      }
+      runner.setEngines(order);
+      // Trả luôn danh sách mới (đã có kết quả dò máy ở trên) để giao diện không phải dò lại một lần nữa.
+      const linked = cfg.engines;
+      const engines = info.map((e) => ({ ...e, linked: linked.includes(e.id), order: linked.indexOf(e.id) }));
+      enginesCache = { at: Date.now(), engines };
+      return sendJson(res, 200, { order: linked, engines });
     }
 
     if (method === 'GET' && pathname === '/api/doctor') return sendJson(res, 200, { checks: await runDoctor(cfg) });

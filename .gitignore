@@ -5,8 +5,8 @@ next-env.d.ts
 *.log
 
 # Dữ liệu và cấu hình riêng của từng dự án
-data/
-local/
+/data/
+/local/
 
 # Kế hoạch làm việc riêng (giữ trên máy, không đưa lên repo)
 KE-HOACH.md

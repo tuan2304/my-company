@@ -135,6 +135,9 @@ export interface Task {
   revisions: number;
   review_feedback: string | null;
   failure_code: string | null;
+  /** Engine đang/đã chạy việc này ("claude", "agy"...) và engine mà việc vừa được chuyển đi vì hết hạn mức. */
+  engine?: string | null;
+  handoff_from?: string | null;
   recoveries: number;
   auto_retries: number;
   /** Mã câu hỏi đang chờ chủ trả lời (ask_owner), null nếu không có. */
@@ -208,7 +211,35 @@ export interface RateLimit {
   seenAt: number;
 }
 
+/** Một engine AI (Claude Code, Antigravity...) như /api/engines trả về. */
+export interface EngineInfo {
+  id: string;
+  label: string;
+  /** Đã liên kết (đang dùng, xoay vòng) hay chưa. */
+  linked: boolean;
+  /** Thứ tự ưu tiên trong danh sách đã liên kết (0 là đầu); -1 nếu chưa liên kết. */
+  order: number;
+  installed: boolean;
+  version: string | null;
+  /** null = không rõ. */
+  loggedIn: boolean | null;
+  models: { id: string; label: string }[];
+  /** Bậc model của công ty (haiku/sonnet/opus) thành model thật của engine này. */
+  tiers: Record<string, string | null>;
+  detail: string;
+  capabilities: { mcp: boolean; maxTurns: boolean; triage: boolean };
+  /** Giờ (ms) engine hết hạn mức tới lúc nào, 0 nếu đang dùng được. */
+  blockedUntil: number;
+}
+
+export interface CompanyEngine {
+  id: string;
+  label: string;
+  blockedUntil: number;
+}
+
 export interface CompanyState {
+  engines?: CompanyEngine[];
   maxConcurrent: number;
   running: number[];
   queued: number;

@@ -39,6 +39,8 @@ export function loadConfig({ projectRoot, overrides = {} } = {}) {
   const cfg = {
     toolDir: TOOL_DIR,
     projectRoot: root,
+    // Gốc dự án lấy từ đâu: "flag" (--project), "env" (COMPANY_PROJECT_ROOT) hay "parent" (mặc định: thư mục cha của công cụ).
+    projectRootSource: projectRoot ? 'flag' : process.env.COMPANY_PROJECT_ROOT ? 'env' : 'parent',
     projectName,
     host: '127.0.0.1',
     port: intFromEnv('OFFICE_PORT', 4310),
@@ -64,11 +66,23 @@ export function loadConfig({ projectRoot, overrides = {} } = {}) {
     answerTimeoutMinutes: 5,
     // Chờ bao lâu rồi tự làm tiếp một việc bị tiến trình thoát bất thường (một lần duy nhất).
     autoRetryDelayMs: 30_000,
+    // Engine chạy nhân viên (server/engines): "claude" hoặc "agy" (Antigravity).
+    engine: process.env.COMPANY_ENGINE || 'claude',
     claudeBin: process.env.COMPANY_CLAUDE_BIN || 'claude',
     // Dùng khi kiểm thử: chạy "node fake-claude.mjs" thay cho claude thật.
     claudeArgsPrefix: [],
+    agyBin: process.env.COMPANY_AGY_BIN || 'agy',
+    // Dùng khi kiểm thử: chạy "node fake-agy.mjs" thay cho agy thật.
+    agyArgsPrefix: [],
     ...overrides,
   };
+  // Các engine đã liên kết, theo thứ tự ưu tiên: hết hạn mức engine này thì chuyển sang engine kế (COMPANY_ENGINES="claude,agy").
+  // Đặt riêng engine (ghi đè hoặc COMPANY_ENGINE) mà không đặt danh sách thì danh sách chỉ có engine đó.
+  if (!Array.isArray(cfg.engines)) {
+    const fromEnv = overrides.engine ? [] : (process.env.COMPANY_ENGINES ?? '').split(',').map((e) => e.trim()).filter(Boolean);
+    cfg.engines = fromEnv.length ? fromEnv : [cfg.engine];
+  }
+  cfg.engine = cfg.engines[0];
   return cfg;
 }
 

@@ -2,6 +2,7 @@
 
 import { JOB_STATUS_LABEL, STATUS_LABEL, TASK_KIND_LABEL } from '@/lib/format';
 import type { Job, Task } from '@/lib/types';
+import { CHILD_PHASE_LABEL, splitByPhase, taskPhase } from '@/lib/work-groups';
 import ContestPanel from './ContestPanel';
 import IntegratePanel from './IntegratePanel';
 
@@ -33,7 +34,7 @@ function TaskRow({ task, selected, onSelect }: { task: Task; selected: boolean; 
         <span className="row-title">#{task.id} {task.title}</span>
         <span className="row-sub">
           {task.member}
-          {task.kind === 'work' && files.length > 0 ? ` · ${files.join(', ')}` : ''}
+          {task.status === 'failed' && task.error ? ` · ${task.error}` : task.kind === 'work' && files.length > 0 ? ` · ${files.join(', ')}` : ''}
           {task.revisions > 0 ? ` · bị trả ${task.revisions} lần` : ''}
           {task.model ? ` · ${task.model}` : ''}
         </span>
@@ -98,28 +99,23 @@ export default function JobDetail({ job, tasks, selectedTaskId, onSelectTask, on
               ? 'Các việc con khác vẫn đang chạy, bạn còn kịp cứu việc lỗi trước khi việc lớn kết thúc.'
               : `Chọn từng việc để làm tiếp, làm lại, nhận phần đã làm hoặc bỏ qua. Việc lớn${job.epic_id !== null ? ` (và yêu cầu #${job.epic_id} chứa nó)` : ''} sẽ được mở lại và gộp lại khi xong.`}
           </p>
-          <ul className="list-plain">
-            {failedWork.map((t) => (
-              <li key={t.id}>
-                <button type="button" className="row" onClick={() => onSelectTask(t.id)}>
-                  <span className="row-title">#{t.id} {t.title}</span>
-                  <span className="row-sub">{t.member} · {t.error ?? 'bị lỗi'}</span>
-                  <span className="chip status-failed">Xử lý</span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <p className="muted">Bấm vào từng việc trong nhóm &ldquo;{CHILD_PHASE_LABEL.problem}&rdquo; bên dưới để xử lý.</p>
         </section>
       )}
 
       <section>
         <h3>Việc con ({work.length})</h3>
         {work.length === 0 && <p className="muted">Trưởng nhóm chưa giao việc con nào.</p>}
-        <ul className="list-plain">{work.map((t) => <TaskRow key={t.id} task={t} selected={t.id === selectedTaskId} onSelect={onSelectTask} />)}</ul>
+        {splitByPhase(work, (t) => taskPhase(t.status)).map((g) => (
+          <details key={g.phase} className={`group group-${g.phase}`} open={g.phase === 'problem' || g.phase === 'active' || work.length <= 6}>
+            <summary>{CHILD_PHASE_LABEL[g.phase]} <span className="group-count">{g.items.length}</span></summary>
+            <ul className="list-plain">{g.items.map((t) => <TaskRow key={t.id} task={t} selected={t.id === selectedTaskId} onSelect={onSelectTask} />)}</ul>
+          </details>
+        ))}
       </section>
 
-      <section>
-        <h3>Lượt của Trưởng nhóm ({plan.length + reviews.length})</h3>
+      <details className="group" open={[...plan, ...reviews].some((t) => t.status === 'failed' || t.status === 'running')}>
+        <summary>Lượt của Trưởng nhóm <span className="group-count">{plan.length + reviews.length}</span></summary>
         <ul className="list-plain">
           {[...plan, ...reviews].map((t) => (
             <li key={t.id}>
@@ -134,7 +130,7 @@ export default function JobDetail({ job, tasks, selectedTaskId, onSelectTask, on
             </li>
           ))}
         </ul>
-      </section>
+      </details>
 
       {job.summary && (
         <section>

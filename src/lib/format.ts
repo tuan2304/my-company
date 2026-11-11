@@ -107,3 +107,18 @@ export function windowLabel(name: string): string {
   if (name === 'seven_day') return 'Khung 7 ngày';
   return name;
 }
+
+/** "vừa xong", "5 phút trước", "3 giờ trước", "hôm qua 14:20", "08/11 09:15". */
+export function formatAgo(ts: number, now: number): string {
+  if (!now) return '';
+  const diff = Math.max(0, now - ts);
+  if (diff < 60_000) return 'vừa xong';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} phút trước`;
+  const day = new Date(now);
+  day.setHours(0, 0, 0, 0);
+  const time = new Date(ts).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+  if (ts >= day.getTime()) return `${Math.floor(diff / 3_600_000)} giờ trước`;
+  day.setDate(day.getDate() - 1);
+  if (ts >= day.getTime()) return `hôm qua ${time}`;
+  return `${new Date(ts).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })} ${time}`;
+}

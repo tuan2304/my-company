@@ -3,6 +3,7 @@ import { Contests, parseContest, validateSets } from './contest.mjs';
 import { UserError } from './errors.mjs';
 import { shorten } from './guard.mjs';
 import { epicJobRescueBlock } from './epics.mjs';
+import { describeFolders, folderRules, inFolders } from './path-guard.mjs';
 import { findMember, workersOf } from './teams.mjs';
 import { branchDiff, checkRepo, integrateBranches, removeWorktreeKeepBranch, resolveRef } from './worktree.mjs';
 
@@ -277,12 +278,20 @@ export class Jobs {
   /** Phạm vi file của một việc con: chuẩn hóa, và phải nằm trong thư mục của team (hồ sơ dự án), vì hook chỉ cho nhân viên sửa ở đó. */
   checkScope(rawFiles, team) {
     const files = normalizeFiles(rawFiles);
-    const folders = (this.r.getProject()?.folders?.[team.id] ?? []).map((f) => normalizeFiles([f])[0]);
-    if (folders.length) {
-      const outside = files.filter((f) => !folders.some((a) => f === a || f.startsWith(`${a}/`)));
+    const folders = this.r.getProject()?.folders?.[team.id] ?? [];
+    const { include, exclude } = folderRules(folders);
+    if (team.requiresFolders && include.length === 0) {
+      throw toolError(
+        `Hồ sơ dự án chưa khai thư mục cho ${team.name} (local/project.md, mục folders.${team.id}), nên nhân viên của team không ghi được file nào. ` +
+          'Đừng giao việc con; hãy kết thúc lượt và báo chủ dự án khai thư mục cho team trước.',
+      );
+    }
+    if (include.length || exclude.length) {
+      const outside = files.filter((f) => !inFolders(f, folders));
       if (outside.length) {
+        const scope = [...include, ...exclude.map((e) => `trừ ${e}`)].join(', ');
         throw toolError(
-          `Phạm vi ${outside.map((f) => `"${f}"`).join(', ')} nằm ngoài thư mục của ${team.name} (${folders.join(', ')}). ` +
+          `Phạm vi ${outside.map((f) => `"${f}"`).join(', ')} nằm ngoài thư mục của ${team.name} (${scope}). ` +
             'Nhân viên của team không sửa được ở đó (sẽ bị chặn), nên đó là phần của team khác. Chỉ giao việc trong thư mục của team, và bỏ phần thuộc team khác ra khỏi việc này.',
         );
       }
@@ -612,8 +621,9 @@ export function buildLeadSystemPrompt({ member, team, role, project, kind }) {
     if (project.name) lines.push(`- Tên: ${project.name}`);
     if (project.stack.length) lines.push(`- Công nghệ: ${project.stack.join(', ')}`);
     const own = project.folders[team.id];
-    if (own?.length) lines.push(`- Thư mục của team bạn (chỉ giao việc trong đây, nhân viên không sửa được chỗ khác): ${own.join(', ')}`);
-    for (const [id, list] of Object.entries(project.folders).filter(([id, l]) => id !== team.id && l.length)) lines.push(`- Thư mục của team ${id} (không giao việc ở đây): ${list.join(', ')}`);
+    if (own?.length) lines.push(`- Thư mục của team bạn (chỉ giao việc trong đây, nhân viên không sửa được chỗ khác): ${describeFolders(own)}`);
+    else if (team.requiresFolders) lines.push('- Hồ sơ chưa khai thư mục cho team bạn: nhân viên không ghi được file nào, đừng giao việc con mà hãy báo chủ dự án.');
+    for (const [id, list] of Object.entries(project.folders).filter(([id, l]) => id !== team.id && l.length)) lines.push(`- Thư mục của team ${id} (không giao việc ở đây): ${describeFolders(list)}`);
     const commands = Object.entries(project.commands);
     if (commands.length) lines.push(`- Lệnh: ${commands.map(([k, v]) => `${k} = ${v}`).join('; ')}`);
     if (project.conventions) lines.push(`- Quy ước:\n${project.conventions}`);

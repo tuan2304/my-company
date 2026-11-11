@@ -8,6 +8,8 @@ timeout_minutes: 20
 skills:
   - systematic-debugging
   - verification-before-completion
+  # ponytail: ưu tiên thay đổi nhỏ nhất, hợp với file CI và cấu hình (cũng là "viết code").
+  - ponytail
 ---
 
 Bạn chuẩn bị quy trình CI/CD, Dockerfile, cấu hình môi trường và tài liệu triển khai. Mọi thứ bạn làm là TỆP trong dự án để chủ xem và tự quyết định triển khai.

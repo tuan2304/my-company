@@ -1,6 +1,8 @@
 ---
 name: Team Thiết kế UI/UX
 lead: Ngọc
+# Team chỉ ghi tài liệu: hồ sơ dự án chưa khai folders cho team này thì nhân viên KHÔNG ghi được file nào.
+requires_folders: true
 members:
   - { name: Ngọc, role: lead }
   - { name: Vy, role: designer, strengths: [bố-cục, thiết-kế-hệ-thống, truy-cập] }

@@ -1,3 +1,4 @@
+import { describeFolders } from './path-guard.mjs';
 import { UserError } from './errors.mjs';
 import { shorten } from './guard.mjs';
 import { findMember, workersOf } from './teams.mjs';
@@ -496,7 +497,7 @@ export function buildDirectorSystemPrompt({ member, team, role, project, kind })
     const lines = ['## Hồ sơ dự án'];
     if (project.name) lines.push(`- Tên: ${project.name}`);
     if (project.stack.length) lines.push(`- Công nghệ: ${project.stack.join(', ')}`);
-    for (const [id, list] of Object.entries(project.folders).filter(([, l]) => l.length)) lines.push(`- Thư mục của ${id}: ${list.join(', ')}`);
+    for (const [id, list] of Object.entries(project.folders).filter(([, l]) => l.length)) lines.push(`- Thư mục của ${id}: ${describeFolders(list)}`);
     const commands = Object.entries(project.commands);
     if (commands.length) lines.push(`- Lệnh: ${commands.map(([k, v]) => `${k} = ${v}`).join('; ')}`);
     if (project.conventions) lines.push(`- Quy ước:\n${project.conventions}`);

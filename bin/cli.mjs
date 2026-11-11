@@ -7,11 +7,12 @@ import { promisify } from 'node:util';
 import { clearPin, hasPin, MIN_PIN_LENGTH, pinProblem, setPin } from '../server/auth.mjs';
 import { ensureDirs, loadConfig, TOOL_DIR } from '../server/config.mjs';
 import { runDoctor } from '../server/doctor.mjs';
-import { detectStack, renderProjectDraft } from '../server/project.mjs';
+import { detectStack, loadProject, renderProjectDraft } from '../server/project.mjs';
 import { startServer } from '../server/index.mjs';
 import {
-  fetchToQuarantine, inspectSkillDir, installSkill, parseSource, readLock, verifyLibrary,
+  describeRoleSkills, fetchToQuarantine, inspectSkillDir, installSkill, parseSource, readLock, verifyLibrary,
 } from '../server/skills.mjs';
+import { loadTeams } from '../server/teams.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -23,7 +24,8 @@ Cách dùng:
   my-company doctor                            Kiểm tra môi trường
   my-company pin set|clear|status              Đặt, xóa hoặc xem PIN cho truy cập từ xa (cần khi dùng Tailscale)
   my-company skills list                       Liệt kê skill đã duyệt
-  my-company skills verify                     Kiểm tra skill còn nguyên vẹn so với skills.lock
+  my-company skills verify                     Kiểm tra skill còn nguyên vẹn so với skills.lock (chỉ ra file thiếu/bị sửa/thừa)
+  my-company skills roles                      Vai trò nào nạp skill nào, skill nào bị bỏ và vì sao
   my-company skills add <owner/repo/đường/dẫn> [--name <tên>] [--exclude <đường,dẫn>] [--yes]
                                                Tải skill vào khu cách ly để duyệt rồi mới đưa vào thư viện
                                                (--exclude: bỏ các file/thư mục không muốn chép)
@@ -92,8 +94,8 @@ async function cmdInit(cfg) {
   if (fs.existsSync(profile)) {
     console.log(`- Hồ sơ dự án đã có: ${profile}`);
   } else {
-    const { stack, commands } = detectStack(cfg.projectRoot);
-    fs.writeFileSync(profile, renderProjectDraft({ name: cfg.projectName, stack, commands }), 'utf8');
+    const { stack, commands, skipped } = detectStack(cfg.projectRoot);
+    fs.writeFileSync(profile, renderProjectDraft({ name: cfg.projectName, stack, commands, skipped }), 'utf8');
     console.log(`- Đã tạo hồ sơ nháp: ${profile}`);
     console.log(`  Phát hiện công nghệ: ${stack.join(', ') || '(chưa nhận ra)'}`);
     console.log('  Hãy mở file này, kiểm tra và sửa. Hồ sơ quyết định thư mục và lệnh nào agent được phép.');
@@ -233,6 +235,21 @@ async function cmdSkills(cfg, positional, flags) {
     return verdicts.some((v) => !v.ok) ? 1 : 0;
   }
 
+  if (action === 'roles') {
+    const teams = loadTeams({ teamsDir: cfg.teamsDir, localTeamsDir: path.join(cfg.localDir, 'teams') });
+    const project = loadProject(cfg.localDir);
+    const { rows, unknownRoles } = describeRoleSkills({ teams, project, libraryDir, lockFile });
+    if (!project) console.log('(Chưa có hồ sơ dự án: skill theo công nghệ và role_skills chưa được tính.)\n');
+    for (const row of rows) {
+      console.log(`${row.team} / ${row.role}: ${row.loaded.length ? row.loaded.join(', ') : '(không nạp skill nào)'}`);
+      for (const s of row.skipped) console.log(`    BỎ ${s.name}: ${s.reason}`);
+    }
+    for (const r of unknownRoles) console.log(`\nCẢNH BÁO: role_skills trong hồ sơ dự án có vai trò "${r}" không tồn tại (gõ nhầm?).`);
+    const skippedCount = rows.reduce((n, r) => n + r.skipped.length, 0);
+    console.log(`\n${rows.length} vai trò, ${skippedCount} skill bị bỏ.`);
+    return skippedCount || unknownRoles.length ? 1 : 0;
+  }
+
   if (action === 'add') {
     if (!source) {
       console.error('Thiếu nguồn. Ví dụ: my-company skills add obra/superpowers/skills/systematic-debugging');
@@ -279,7 +296,7 @@ async function cmdSkills(cfg, positional, flags) {
     return 0;
   }
 
-  console.error('Dùng: skills list | verify | add <nguồn>');
+  console.error('Dùng: skills list | verify | roles | add <nguồn>');
   return 2;
 }
 

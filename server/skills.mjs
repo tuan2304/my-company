@@ -55,6 +55,30 @@ export function hashDir(dir) {
   return hash.digest('hex');
 }
 
+/** Băm từng file (cùng cách chuẩn hóa xuống dòng như hashDir) để chỉ ra đúng file nào thiếu, bị sửa hay thừa. */
+export function hashFiles(dir) {
+  const out = {};
+  for (const rel of listFiles(dir)) out[rel] = crypto.createHash('sha256').update(normalizedBytes(path.join(dir, rel))).digest('hex');
+  return out;
+}
+
+/** So danh sách file lúc duyệt với hiện tại. */
+export function diffFiles(expected, actual) {
+  const missing = Object.keys(expected).filter((f) => !Object.hasOwn(actual, f));
+  const changed = Object.keys(expected).filter((f) => Object.hasOwn(actual, f) && actual[f] !== expected[f]);
+  const extra = Object.keys(actual).filter((f) => !Object.hasOwn(expected, f));
+  return { missing, changed, extra };
+}
+
+function describeDiff({ missing, changed, extra }) {
+  const show = (list) => `${list.slice(0, 5).join(', ')}${list.length > 5 ? ` và ${list.length - 5} file khác` : ''}`;
+  const parts = [];
+  if (missing.length) parts.push(`thiếu ${missing.length} file (${show(missing)})`);
+  if (changed.length) parts.push(`bị sửa ${changed.length} file (${show(changed)})`);
+  if (extra.length) parts.push(`thừa ${extra.length} file (${show(extra)})`);
+  return parts.join('; ');
+}
+
 export function readLock(file) {
   if (!fs.existsSync(file)) return { version: 1, skills: {} };
   const lock = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -66,6 +90,23 @@ export function writeLock(file, lock) {
   fs.writeFileSync(file, `${JSON.stringify({ ...lock, skills: sorted }, null, 2)}\n`, 'utf8');
 }
 
+/**
+ * Ghi danh sách file kèm hash vào skills.lock cho các skill duyệt từ trước khi có tính năng này. Chỉ ghi cho skill CÒN NGUYÊN VẸN
+ * (hash tổng khớp), để không vô tình "duyệt lại" một skill đã bị sửa. Trả về tên các skill vừa được ghi.
+ */
+export function recordFileHashes({ libraryDir, lockFile }) {
+  const lock = readLock(lockFile);
+  const updated = [];
+  for (const [name, entry] of Object.entries(lock.skills)) {
+    const dir = path.join(libraryDir, name);
+    if (entry.files || !fs.existsSync(dir) || hashDir(dir) !== entry.sha256) continue;
+    entry.files = hashFiles(dir);
+    updated.push(name);
+  }
+  if (updated.length) writeLock(lockFile, lock);
+  return updated;
+}
+
 /** Kiểm tra mọi skill trong lock còn nguyên vẹn. */
 export function verifyLibrary({ libraryDir, lockFile }) {
   const lock = readLock(lockFile);
@@ -73,40 +114,58 @@ export function verifyLibrary({ libraryDir, lockFile }) {
     const dir = path.join(libraryDir, name);
     if (!fs.existsSync(dir)) return { name, ok: false, reason: 'thiếu thư mục' };
     const actual = hashDir(dir);
-    return actual === entry.sha256 ? { name, ok: true } : { name, ok: false, reason: 'nội dung đã bị đổi so với lúc duyệt' };
+    if (actual === entry.sha256) return { name, ok: true, recorded: Boolean(entry.files) };
+    if (!entry.files) return { name, ok: false, reason: 'nội dung đã bị đổi so với lúc duyệt (skills.lock chưa có danh sách từng file nên không chỉ ra được file nào)' };
+    const diff = diffFiles(entry.files, hashFiles(dir));
+    // Danh sách file khớp hết mà hash tổng vẫn khác: lock bị sửa tay hoặc ghi lệch; báo chung.
+    return { name, ok: false, ...diff, reason: describeDiff(diff) || 'nội dung đã bị đổi so với lúc duyệt (danh sách file khớp nhưng hash tổng khác: kiểm lại skills.lock)' };
   });
 }
 
 /**
- * Ghép gói skill cho một lần chạy: skill luôn nạp của vai trò + skill theo công nghệ
- * khi hồ sơ dự án khớp. Chỉ nạp skill có trong lock và còn nguyên vẹn.
+ * Chọn skill cho một vai trò (chưa chép gì): skill luôn nạp của vai trò + role_skills của hồ sơ dự án + skill theo công nghệ
+ * khi hồ sơ khớp. Chỉ skill có trong lock và còn nguyên vẹn mới vào `loaded`; còn lại vào `skipped` kèm lý do.
+ * `hashCache` (Map tên -> hash) để dùng lại khi xét nhiều vai trò một lúc (lệnh `skills roles`, doctor).
  */
-export function composeSkillPack({ libraryDir, lockFile, role, project, outDir, skillSet = null, excludeSkills = [] }) {
+export function planSkillPack({ libraryDir, lockFile, role, project, skillSet = null, excludeSkills = [], hashCache = null, lock = null }) {
   // Thi đấu skill: bỏ các skill đang đem ra so sánh khỏi phần mặc định của vai trò, rồi nạp đúng bộ skill của việc này.
   const exclude = new Set(excludeSkills);
-  const names = new Set((role.skills ?? []).filter((n) => !exclude.has(n)));
+  // Skill của vai trò = khai trong file vai trò + thêm từ hồ sơ dự án (role_skills), không phải sao cả team vào local/teams.
+  const roleSkills = [...(role.skills ?? []), ...(project?.roleSkills?.[role.id] ?? [])];
+  const names = new Set(roleSkills.filter((n) => !exclude.has(n)));
   for (const n of skillSet ?? []) names.add(String(n));
   const stack = (project?.stack ?? []).map((s) => s.toLowerCase());
   for (const [key, list] of Object.entries(role.stack_skills ?? {})) {
     if (stack.some((s) => s.includes(String(key).toLowerCase()))) for (const n of list) names.add(String(n));
   }
   for (const n of exclude) if (!(skillSet ?? []).includes(n)) names.delete(n);
-  const lock = readLock(lockFile);
+  const lockData = lock ?? readLock(lockFile);
+  const hashOf = (name, src) => {
+    if (!hashCache) return hashDir(src);
+    if (!hashCache.has(name)) hashCache.set(name, hashDir(src));
+    return hashCache.get(name);
+  };
   const loaded = [];
   const skipped = [];
   for (const name of names) {
     const src = path.join(libraryDir, name);
-    const entry = lock.skills[name];
+    const entry = lockData.skills[name];
     if (!entry) {
       skipped.push({ name, reason: 'chưa được duyệt (không có trong skills.lock)' });
     } else if (!fs.existsSync(path.join(src, 'SKILL.md'))) {
       skipped.push({ name, reason: 'không có SKILL.md trong thư viện' });
-    } else if (hashDir(src) !== entry.sha256) {
+    } else if (hashOf(name, src) !== entry.sha256) {
       skipped.push({ name, reason: 'nội dung khác với lúc duyệt' });
     } else {
       loaded.push({ name, src });
     }
   }
+  return { loaded, skipped };
+}
+
+/** Ghép gói skill cho một lần chạy (xem planSkillPack) và chép vào outDir dạng plugin. */
+export function composeSkillPack({ libraryDir, lockFile, role, project, outDir, skillSet = null, excludeSkills = [] }) {
+  const { loaded, skipped } = planSkillPack({ libraryDir, lockFile, role, project, skillSet, excludeSkills });
   if (loaded.length === 0) return { dir: null, loaded: [], skipped };
 
   fs.rmSync(outDir, { recursive: true, force: true });
@@ -117,6 +176,26 @@ export function composeSkillPack({ libraryDir, lockFile, role, project, outDir, 
   );
   for (const { name, src } of loaded) fs.cpSync(src, path.join(outDir, 'skills', name), { recursive: true });
   return { dir: outDir, loaded: loaded.map((l) => l.name), skipped };
+}
+
+/** Vai trò nào nạp skill nào, bỏ skill nào và vì sao (lệnh `skills roles`, cảnh báo của doctor). */
+export function describeRoleSkills({ teams, project, libraryDir, lockFile }) {
+  const hashCache = new Map();
+  const lock = readLock(lockFile);
+  const rows = [];
+  for (const team of teams) {
+    const used = new Set(team.members.map((m) => m.role));
+    for (const roleId of Object.keys(team.roles)) {
+      if (!used.has(roleId)) continue;
+      const role = team.roles[roleId];
+      const { loaded, skipped } = planSkillPack({ libraryDir, lockFile, role, project, hashCache, lock });
+      rows.push({ team: team.id, role: roleId, loaded: loaded.map((l) => l.name), skipped });
+    }
+  }
+  // Khóa role_skills trỏ tới vai trò không có thật: gõ nhầm tên thì skill âm thầm không được nạp.
+  const known = new Set(rows.map((r) => r.role));
+  const unknownRoles = Object.keys(project?.roleSkills ?? {}).filter((r) => !known.has(r));
+  return { rows, unknownRoles };
 }
 
 // ---- Thêm skill mới qua khu cách ly (dùng bởi `skills add`) ----
@@ -193,7 +272,7 @@ export function installSkill({ skillDir, libraryDir, lockFile, name, meta, exclu
     },
   });
   const lock = readLock(lockFile);
-  lock.skills[name] = { ...meta, excluded: skipped, sha256: hashDir(dest), addedAt: new Date().toISOString() };
+  lock.skills[name] = { ...meta, excluded: skipped, sha256: hashDir(dest), files: hashFiles(dest), addedAt: new Date().toISOString() };
   writeLock(lockFile, lock);
   return dest;
 }

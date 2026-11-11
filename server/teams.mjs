@@ -105,6 +105,9 @@ function readTeam(teamDir, id) {
     members,
     roles,
     limits: { ...DEFAULT_LIMITS, ...(data.limits ?? {}) },
+    // Team chỉ ghi tài liệu/báo cáo: hồ sơ dự án không khai thư mục cho team thì nhân viên KHÔNG ghi được file nào
+    // (thay vì "ghi được mọi nơi" như team viết code).
+    requiresFolders: data.requires_folders === true,
     // Mô tả team (thân team.md): Giám đốc đọc để biết nên giao việc gì cho team này.
     description: teamBody.trim(),
   };
@@ -132,6 +135,7 @@ export function summarizeTeams(teams) {
     lead: team.lead,
     description: team.description ?? '',
     limits: team.limits,
+    requiresFolders: team.requiresFolders === true,
     members: team.members.map((m) => {
       const role = team.roles[m.role];
       return {

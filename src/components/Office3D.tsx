@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { STATUS_LABEL, TASK_KIND_LABEL } from '@/lib/format';
-import type { Epic, Job, Task, TeamSummary } from '@/lib/types';
+import { engineLines, taskModelLabel } from '@/lib/engines';
+import type { EngineInfo, Epic, Job, Task, TeamSummary } from '@/lib/types';
 import { diffFlows, type Snapshot } from '@/office/flow';
 import { countByTeam, layoutBuilding } from '@/office/layout';
 import { createOfficeScene, type ViewMode } from '@/office/create';
@@ -20,6 +21,8 @@ interface Props {
   epics: Epic[];
   /** Dòng nhật ký công cụ gần nhất của từng việc đang chạy (để biết ai đang đọc code, ai đang chạy lệnh). */
   lastTool: Record<number, string>;
+  /** Các AI đã liên kết và model thật của chúng (rỗng nếu chưa tải): hiện trong thẻ nhân viên. */
+  engines?: EngineInfo[];
   /** Thời điểm công ty nghỉ giải lao tới (hết hạn mức Pro), 0 nếu không nghỉ. */
   pausedUntil: number;
   now: number;
@@ -69,7 +72,7 @@ const LEGEND: { color: string; text: string }[] = [
 ];
 const FLOW_GAP_MS = 350; // nhiều tờ giấy cùng lúc thì cho bay lần lượt
 
-export default function Office3D({ teams, tasks, jobs, epics, lastTool, pausedUntil, now, onOpenTask }: Props) {
+export default function Office3D({ teams, tasks, jobs, epics, lastTool, engines = [], pausedUntil, now, onOpenTask }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<OfficeScene | null>(null);
   const previous = useRef<Snapshot | null>(null);
@@ -271,6 +274,13 @@ export default function Office3D({ teams, tasks, jobs, epics, lastTool, pausedUn
             <div>
               <h3>{person.name}{person.isLead && <span className="crown"> · Trưởng nhóm</span>}</h3>
               <p className="muted">{person.title} · {person.teamName} · {person.model}</p>
+              {engineLines(engines, person.model, { lead: person.isLead }).length > 0 && (
+                <ul className="list-plain person-engines" aria-label="Model theo từng AI đã liên kết">
+                  {engineLines(engines, person.model, { lead: person.isLead }).map((line) => (
+                    <li key={line.id}><span className="muted">{line.label}</span> <strong>{line.model}</strong></li>
+                  ))}
+                </ul>
+              )}
             </div>
             <button type="button" className="icon-btn" aria-label="Bỏ chọn" onClick={() => setSelected(null)}><Icon name="x" size={16} /></button>
           </div>
@@ -290,7 +300,7 @@ export default function Office3D({ teams, tasks, jobs, epics, lastTool, pausedUn
               <li key={t.id}>
                 <button type="button" className="row" onClick={() => onOpenTask(t.id)}>
                   <span className="row-title">#{t.id} {t.title}</span>
-                  <span className="row-sub">{TASK_KIND_LABEL[t.kind]}{t.model ? ` · ${t.model}` : ''}</span>
+                  <span className="row-sub">{TASK_KIND_LABEL[t.kind]}{t.model ? ` · ${taskModelLabel(t, engines)}` : ''}</span>
                   <span className={`chip status-${t.status}`}>{STATUS_LABEL[t.status]}</span>
                 </button>
               </li>

@@ -3,8 +3,10 @@
  * Hook PreToolUse của Claude Code: chặn CỨNG việc đọc/ghi file ngoài phạm vi, không dựa vào việc AI tự giữ lời.
  * Cấu hình qua biến môi trường do runner đặt:
  *   COMPANY_GUARD_ROOT   thư mục làm việc (worktree); mọi file phải nằm trong đây
- *   COMPANY_GUARD_ALLOW  JSON mảng thư mục được phép SỬA, tính từ gốc worktree (rỗng = sửa được mọi nơi trong gốc)
- *   COMPANY_GUARD_MODE   "worker" (sửa được trong phạm vi) hoặc "readonly" (không sửa gì, dùng cho Trưởng nhóm)
+ *   COMPANY_GUARD_ALLOW  JSON mảng thư mục được phép SỬA, tính từ gốc worktree. Mục bắt đầu bằng "!" là loại trừ
+ *                        (ví dụ ["src/app", "!src/app/api"]). Rỗng = sửa được mọi nơi trong gốc (trừ chế độ "scoped").
+ *   COMPANY_GUARD_MODE   "worker" (sửa được trong phạm vi), "scoped" (như worker nhưng danh sách rỗng = KHÔNG sửa được gì,
+ *                        dùng cho team chỉ ghi tài liệu) hoặc "readonly" (không sửa gì, dùng cho Trưởng nhóm)
  * Giao thức: đọc JSON từ stdin, thoát với mã 2 và in lý do ra stderr để chặn công cụ.
  */
 import fs from 'node:fs';
@@ -34,6 +36,38 @@ function realpathLoose(target) {
   }
 }
 
+const cleanFolder = (value) => String(value).trim().replace(/\\/g, '/').replace(/^\.?\/+|\/+$/g, '');
+
+/**
+ * Tách danh sách thư mục của một team thành phần được sửa (include) và phần loại trừ (exclude, viết "!đường/dẫn").
+ * Khớp theo tiền tố đường dẫn: "src/lib" gồm cả "src/lib/a.ts" nhưng không gồm "src/library".
+ */
+export function folderRules(list) {
+  const include = [];
+  const exclude = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const text = String(raw).trim();
+    const negated = text.startsWith('!');
+    const folder = cleanFolder(negated ? text.slice(1) : text);
+    if (folder) (negated ? exclude : include).push(folder);
+  }
+  return { include, exclude };
+}
+
+/** Đường dẫn (tính từ gốc, dạng a/b/c) có thuộc danh sách thư mục không. Danh sách không có mục "được sửa" nào thì coi là mọi nơi. */
+export function inFolders(relPosix, list) {
+  const { include, exclude } = folderRules(list);
+  const rel = norm(cleanFolder(relPosix));
+  const hit = (p) => rel === norm(p) || rel.startsWith(`${norm(p)}/`);
+  return (include.length === 0 || include.some(hit)) && !exclude.some(hit);
+}
+
+/** Viết danh sách thư mục cho lời nhắc: "src/app, trừ src/app/api". */
+export function describeFolders(list) {
+  const { include, exclude } = folderRules(list);
+  return [...include, ...exclude.map((e) => `trừ ${e}`)].join(', ');
+}
+
 export function decide({ toolName, toolInput, root, allow = [], mode = 'worker' }) {
   const raw = toolInput?.file_path ?? toolInput?.notebook_path ?? toolInput?.path;
   if (typeof raw !== 'string' || raw === '') return { allowed: true };
@@ -57,15 +91,19 @@ export function decide({ toolName, toolInput, root, allow = [], mode = 'worker' 
 
   if (WRITE_TOOLS.has(toolName)) {
     if (mode === 'readonly') return { allowed: false, reason: 'Vai trò này chỉ được đọc, không được sửa file.' };
-    const prefixes = allow.map((a) => String(a).replace(/\\/g, '/').replace(/^\.?\/+|\/+$/g, '')).filter(Boolean);
-    if (prefixes.length > 0) {
-      const ok = prefixes.some((p) => norm(relPosix) === norm(p) || norm(relPosix).startsWith(`${norm(p)}/`));
-      if (!ok) {
-        return {
-          allowed: false,
-          reason: `Ngoài thư mục được phép sửa của team (${prefixes.join(', ')}): ${relPosix}. Nếu thật sự cần, hãy báo lại trong phần "Điều còn dang dở" để Trưởng nhóm xử lý.`,
-        };
-      }
+    const { include, exclude } = folderRules(allow);
+    if (mode === 'scoped' && include.length === 0) {
+      return {
+        allowed: false,
+        reason: 'Team của bạn chỉ được ghi vào thư mục khai trong hồ sơ dự án (local/project.md, mục folders), nhưng hồ sơ chưa khai thư mục nào cho team này. Hãy báo lại trong phần "Điều còn dang dở" để chủ dự án khai thư mục.',
+      };
+    }
+    if ((include.length > 0 || exclude.length > 0) && !inFolders(relPosix, allow)) {
+      const scope = [...include, ...exclude.map((e) => `trừ ${e}`)].join(', ');
+      return {
+        allowed: false,
+        reason: `Ngoài thư mục được phép sửa của team (${scope}): ${relPosix}. Nếu thật sự cần, hãy báo lại trong phần "Điều còn dang dở" để Trưởng nhóm xử lý.`,
+      };
     }
   }
   return { allowed: true };

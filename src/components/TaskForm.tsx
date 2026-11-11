@@ -2,10 +2,13 @@
 
 import { useState, type FormEvent } from 'react';
 import { api } from '@/lib/api';
-import type { TeamSummary, Task } from '@/lib/types';
+import { TIER_LABEL, engineLines, linkedEngines } from '@/lib/engines';
+import type { EngineInfo, TeamSummary, Task } from '@/lib/types';
 
 interface Props {
   teams: TeamSummary[];
+  /** Các AI đã liên kết: hiện model thật sẽ dùng cho việc này. */
+  engines?: EngineInfo[];
   disabled: boolean;
   onCreated: (task: Task) => void;
 }
@@ -19,7 +22,7 @@ const LEVEL_OPTIONS: { value: Level; label: string }[] = [
   { value: 'hard', label: 'Ép mức Khó: model cao (opus), tốn hạn mức hơn' },
 ];
 
-export default function TaskForm({ teams, disabled, onCreated }: Props) {
+export default function TaskForm({ teams, engines = [], disabled, onCreated }: Props) {
   // Trưởng nhóm không nhận việc lẻ (không tự viết code): chỉ nhận việc lớn của cả team.
   const members = teams.flatMap((team) => team.members.filter((m) => !m.isLead).map((m) => ({ ...m, team: team.name })));
   const [member, setMember] = useState('');
@@ -31,6 +34,10 @@ export default function TaskForm({ teams, disabled, onCreated }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const chosen = member || members[0]?.name || '';
+  const chosenModel = members.find((m) => m.name === chosen)?.model ?? 'sonnet';
+  // Bậc model sẽ dùng theo độ khó: Tự động thì hiện cả ba bậc vì hệ thống mới chọn lúc làm.
+  const tiers = level === 'easy' ? ['haiku'] : level === 'hard' ? ['opus'] : level === 'normal' ? [chosenModel] : ['haiku', chosenModel, 'opus'];
+  const linked = linkedEngines(engines);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -73,6 +80,27 @@ export default function TaskForm({ teams, disabled, onCreated }: Props) {
           ))}
         </select>
       </label>
+      {linked.length > 0 && (
+        <div className="engine-hint" aria-label="Model sẽ dùng theo từng AI đã liên kết">
+          <span className="muted">Model sẽ dùng{linked.length > 1 ? ' (AI đầu tiên còn hạn mức được dùng trước, hết thì chuyển sang AI kế)' : ''}:</span>
+          <ul className="list-plain">
+            {linked.map((engine) => (
+              <li key={engine.id}>
+                <span className="muted">{engine.label}</span>{' '}
+                {engine.capabilities.triage || level !== 'auto'
+                  ? tiers.map((tier, i) => (
+                    <span key={`${tier}-${i}`}>
+                      {i > 0 && ' · '}
+                      {tiers.length > 1 && <span className="muted">{TIER_LABEL[tier] ?? tier} </span>}
+                      <strong>{engineLines([engine], tier)[0]?.model}</strong>
+                    </span>
+                  ))
+                  : <span><span className="muted">Bình thường </span><strong>{engineLines([engine], chosenModel)[0]?.model}</strong> <span className="muted">(AI này không tự đánh giá độ khó)</span></span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <label>
         Tiêu đề
         <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} placeholder="Ví dụ: Thêm hàm tính tổng đơn hàng" required />

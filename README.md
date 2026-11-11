@@ -125,7 +125,7 @@ Gốc dự án mặc định là **thư mục cha** của `.my-company/`. Muốn
 
 > **⚠ Chỗ khó.** Đây là bước quan trọng nhất và dễ làm sai nhất, vì hồ sơ này quyết định **nhân viên được sửa thư mục nào** và **được chạy lệnh nào**. Bản nháp do `init` tạo thường chỉ đoán đúng công nghệ, còn `folders` và `conventions` thì bỏ trống.
 
-Ví dụ hồ sơ đã điền cho một dự án Next.js + Supabase:
+Ví dụ hồ sơ đã điền cho một dự án Next.js + Supabase (ví dụ đầy đủ, có chú thích từng mục, từ một dự án thật: [docs/vi-du/project.web96photobooth.md](docs/vi-du/project.web96photobooth.md)):
 
 ```yaml
 ---
@@ -133,12 +133,12 @@ name: shop-online
 stack: [Next.js, TypeScript, Supabase]
 folders:                          # mỗi team chỉ sửa được trong các thư mục này
   backend:  [src/server, supabase]
-  frontend: [src/app, src/components]
+  frontend: [src/app, src/components, "!src/app/api"]   # "!" = trừ ra
   quality:  [test]
   devops:   [.github, Dockerfile]
   design:   [docs/design]
   security: [docs/security]
-  shared:   []
+  report:   [reports]
 commands:                         # lệnh chuẩn của dự án
   install: npm install
   test: npm test
@@ -153,8 +153,12 @@ conventions: |
 
 Điều cần nắm:
 
-- `folders`: team nào để `[]` thì **không bị giới hạn thư mục** (vẫn bị nhốt trong worktree và vẫn không đụng được `.env`, `.git`). Khai cho đủ để chặn chặt hơn.
-- `allowed_commands`: **chưa khai thì nhân viên không chạy được lệnh nào, kể cả test.** Chỉ liệt kê lệnh an toàn; mỗi mục khớp cả lệnh đó và lệnh đó kèm đối số (`npm test` khớp `npm test -- --watch=false`). `npm install` mặc định không nằm trong danh sách.
+- `folders`: khóa là **id của team** (tên thư mục trong `teams/`: backend, frontend, quality, devops, design, security, report). Khớp theo tiền tố đường dẫn; mục bắt đầu bằng `!` là loại trừ (`[src/app, "!src/app/api"]`, nhớ ngoặc kép).
+  - Team viết code (backend, frontend, quality, devops) để `[]` thì **không bị giới hạn thư mục** (vẫn bị nhốt trong worktree và vẫn không đụng được `.env`, `.git`).
+  - Team chỉ ghi tài liệu (design, security, report, khai `requires_folders: true` trong `team.md`) để `[]` thì **không ghi được file nào**: phải khai thư mục thì team mới làm được việc.
+  - `doctor` cảnh báo khóa không khớp team nào, khóa cũ `reports` (tự hiểu là `report`), và team để rỗng.
+- `allowed_commands`: **chưa khai thì nhân viên không chạy được lệnh nào, kể cả test.** Chỉ liệt kê lệnh an toàn; mỗi mục `X` thành hai quy tắc của Claude Code là `Bash(X)` và `Bash(X *)`, nên khớp cả lệnh đó và lệnh đó kèm đối số (`npm test` khớp `npm test -- --watch=false`). `npm install` mặc định không nằm trong danh sách. Có thể dùng `*` trong mục (ví dụ `node tests/*` để chạy một test riêng) theo cú pháp quy tắc của Claude Code; cách này **chưa được thử với agent thật**, hãy chạy thử một việc nhỏ trước khi dựa vào nó.
+- `role_skills` (không bắt buộc): thêm skill cho **một vai trò** mà không phải sao cả team vào `local/teams/`, ví dụ `role_skills: { qa: [ponytail] }`. Skill được cộng thêm vào danh sách của file vai trò. Xem vai trò nào nạp gì: `npm run skills -- roles`.
 - `conventions`: quy ước code của dự án, được đưa vào lời nhắc của mọi nhân viên. Viết càng đúng thì kết quả càng ít phải sửa.
 
 **Nhờ AI điền giúp.** Mở Claude Code ở thư mục dự án (không phải `.my-company/`) và dán:
@@ -165,8 +169,9 @@ CI nếu có, vài file code tiêu biểu), rồi hoàn thiện file .my-company
 
 Cụ thể:
 1. Điền `stack` đúng với công nghệ thực tế.
-2. Điền `folders` cho từng team (backend, frontend, quality, devops, design, security)
-   bằng các thư mục THẬT có trong dự án. Team nào không có thư mục phù hợp thì để [].
+2. Điền `folders` cho từng team (backend, frontend, quality, devops, design, security, report)
+   bằng các thư mục THẬT có trong dự án. Team viết code không có thư mục phù hợp thì để [];
+   design, security, report phải có thư mục (để [] thì chúng không ghi được gì).
 3. Điền `commands` và `allowed_commands` bằng các lệnh test, lint, build, typecheck
    có thật trong dự án (xem package.json hoặc Makefile). Chỉ thêm lệnh chỉ đọc hoặc
    an toàn, KHÔNG thêm lệnh deploy, push, xóa file, hay lệnh ghi vào cơ sở dữ liệu thật.
@@ -190,7 +195,10 @@ Mọi dòng phải ở mức `OK`. Nếu có `LỖI` hoặc `CHÚ Ý`:
 | `Không tìm thấy lệnh "node" trong PATH` | Cài lại Node.js và bật tùy chọn thêm vào PATH |
 | `Dự án chưa sẵn sàng` | Thư mục dự án chưa là git repo hoặc chưa có commit |
 | `Hồ sơ dự án chưa khai lệnh nào được phép` | Quay lại bước 2, điền `allowed_commands` |
-| `Skill bị đổi hoặc thiếu` | Đừng sửa file trong `skills/library/`; `git checkout skills skills.lock` để khôi phục |
+| `Skill bị đổi hoặc thiếu` | Dòng chi tiết nêu file nào thiếu/bị sửa/thừa. Đừng sửa file trong `skills/library/`; `git checkout skills skills.lock` để khôi phục |
+| `Gốc dự án đang là gốc ổ đĩa` / `không giống một dự án` | Công cụ không nằm trong dự án: đặt `COMPANY_PROJECT_ROOT` hoặc chạy kèm `--project <thư mục>` |
+| `Khóa trong folders không khớp team nào` | Sửa tên khóa cho đúng id team (xem bước 2) |
+| `... skill khai cho vai trò nhưng sẽ không được nạp` | Chạy `npm run skills -- roles` để xem lý do |
 
 ### Bước 4. Chạy
 
@@ -254,12 +262,13 @@ Cần Edge hoặc Chrome trên máy (đặt `COMPANY_BROWSER` nếu cài ở ch�
 
 #### Thêm team, đổi nhân viên, đổi model
 
-Mỗi team là một thư mục trong `teams/`. Sửa `team.md` (thành viên, giới hạn) và file vai trò (model, công cụ, skill, chỉ dẫn). Muốn đổi cho riêng dự án này mà không đụng bản gốc, đặt bản ghi đè vào `local/teams/`. **Nhờ AI giúp:** *"Đọc thư mục teams/ và server/teams.mjs trong .my-company/, rồi tạo một team mới tên X gồm các vai trò Y theo đúng định dạng hiện có."*
+Mỗi team là một thư mục trong `teams/`. Sửa `team.md` (thành viên, giới hạn) và file vai trò (model, công cụ, skill, chỉ dẫn). Muốn đổi cho riêng dự án này mà không đụng bản gốc, đặt bản ghi đè vào `local/teams/` (thay **cả** team cùng id, không tự cập nhật khi bản gốc đổi). Chỉ cần thêm skill cho một vai trò thì dùng `role_skills` trong hồ sơ dự án (bước 2). **Nhờ AI giúp:** *"Đọc thư mục teams/ và server/teams.mjs trong .my-company/, rồi tạo một team mới tên X gồm các vai trò Y theo đúng định dạng hiện có."*
 
 #### Cài skill từ GitHub
 
 ```bash
 npm run skills list
+npm run skills -- roles      # vai trò nào nạp skill nào, bỏ skill nào và vì sao
 npm run skills add <owner/repo/đường/dẫn> -- --yes
 ```
 
@@ -291,7 +300,7 @@ Skill được tải vào khu cách ly, **hãy tự đọc `SKILL.md` và mọi 
 ## Phát triển
 
 ```bash
-npm test          # 287 bài kiểm thử, dùng claude giả (tests/fixtures/fake-claude.mjs), không tốn hạn mức
+npm test          # hơn 330 bài kiểm thử, dùng claude giả (tests/fixtures/fake-claude.mjs), không tốn hạn mức
 npm run lint
 npm run typecheck
 npm run dev       # giao diện chạy chế độ phát triển
@@ -301,7 +310,7 @@ npm run dev       # giao diện chạy chế độ phát triển
 
 Dùng `npm run push` thay cho `git push`. Sau khi push xong, Team Báo cáo (`teams/report/`, chạy qua `scripts/push-report.mjs`) ghi một file Markdown mô tả những gì vừa push vào `reports/<năm-tháng>/<việc-đã-làm>.md`, commit file đó rồi push thêm một lần. Mỗi lần push một file; tên file lấy từ tiêu đề việc đã làm.
 
-- Team Báo cáo cũng có mặt trong văn phòng (Trưởng nhóm Thảo, người viết Mai) và nhận việc từ Giám đốc như các team khác: khai `reports: [reports]` trong `local/project.md` để Mai được phép ghi vào thư mục `reports/`. Chỉ dẫn viết báo cáo nằm ở `teams/report/reporter.md`, dùng chung cho cả lệnh `npm run push`.
+- Team Báo cáo cũng có mặt trong văn phòng (Trưởng nhóm Thảo, người viết Mai) và nhận việc từ Giám đốc như các team khác: khai `report: [reports]` trong `local/project.md` để Mai được phép ghi vào thư mục `reports/`. Chỉ dẫn viết báo cáo nằm ở `teams/report/reporter.md`, dùng chung cho cả lệnh `npm run push`.
 - Tóm tắt do Mai (Claude haiku) viết bằng đăng nhập gói Pro (không dùng API). Không gọi được Claude thì báo cáo vẫn được ghi, chỉ có phần dữ kiện lấy từ git. Thêm `--no-ai` để chủ động bỏ phần tóm tắt.
 - Mọi tham số khác được chuyển cho `git push`, ví dụ `npm run push -- origin master`.
 - Lần push chỉ chứa thư mục `reports/` không tạo báo cáo mới, nên không lặp vô hạn.
