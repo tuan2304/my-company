@@ -13,6 +13,7 @@ import { buildLeadSystemPrompt, Jobs } from './jobs.mjs';
 import { looksLikeQuotaText, nextRetryAt, parseRateLimitEvent } from './quota.mjs';
 import { ANSWER_MAX_TURNS, Questions } from './questions.mjs';
 import { composeSkillPack } from './skills.mjs';
+import { knownFailuresLine } from './project.mjs';
 import { findMember } from './teams.mjs';
 import { nextTier, triageTask } from './triage.mjs';
 import { checkRepo, commitWorktree, createWorktree } from './worktree.mjs';
@@ -60,6 +61,8 @@ export function buildSystemPrompt({ member, team, role, project, canAsk = false,
     for (const [id, list] of others) lines.push(`- Thư mục của ${id} (không tự ý sửa): ${describeFolders(list)}`);
     const commands = Object.entries(project.commands);
     if (commands.length) lines.push(`- Lệnh: ${commands.map(([k, v]) => `${k} = ${v}`).join('; ')}`);
+    const failLine = knownFailuresLine(project);
+    if (failLine) lines.push(failLine);
     if (project.conventions) lines.push(`- Quy ước:\n${project.conventions}`);
     parts.push(lines.join('\n'));
   }
@@ -113,6 +116,8 @@ export function buildAnswerSystemPrompt({ member, team, role, project }) {
     const lines = ['## Hồ sơ dự án'];
     if (project.name) lines.push(`- Tên: ${project.name}`);
     if (project.stack.length) lines.push(`- Công nghệ: ${project.stack.join(', ')}`);
+    const failLine = knownFailuresLine(project);
+    if (failLine) lines.push(failLine);
     if (project.conventions) lines.push(`- Quy ước:\n${project.conventions}`);
     parts.push(lines.join('\n'));
   }

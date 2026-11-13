@@ -42,10 +42,10 @@ test('GET /api/state trả về dự án, team và trạng thái công ty', asyn
     assert.equal(res.json.project.hasProfile, true);
     assert.deepEqual(res.json.project.stack, ['Node']);
     const backend = res.json.teams.find((t) => t.id === 'backend');
-    assert.deepEqual(backend.members.map((m) => `${m.name}:${m.model}`), ['Minh:opus', 'An:sonnet', 'Bình:sonnet', 'Hương:sonnet']);
+    assert.deepEqual(backend.members.map((m) => `${m.name}:${m.model}`), ['Minh:opus', 'An:sonnet', 'Bình:sonnet', 'Hương:sonnet', 'Khang:sonnet', 'Nam:sonnet']);
     assert.deepEqual(backend.members.filter((m) => m.isLead).map((m) => m.name), ['Minh']);
     assert.equal(backend.lead, 'Minh');
-    assert.equal(res.json.company.maxConcurrent, 2);
+    assert.equal(res.json.company.maxConcurrent, 6);
     assert.equal(res.json.configError, null);
   } finally {
     await cleanup();

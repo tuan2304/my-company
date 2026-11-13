@@ -4,6 +4,9 @@ lead: Khôi
 members:
   - { name: Khôi, role: lead }
   - { name: Sơn, role: devops-engineer, strengths: [ci-cd, docker, môi-trường] }
+  - { name: Đạt, role: devops-engineer, strengths: [build, tài-liệu-triển-khai, cấu-hình] }
+  - { name: Tâm, role: devops-engineer, strengths: [giám-sát, nhật-ký] }
+  - { name: Nhi, role: devops-engineer, strengths: [hạ-tầng, sao-lưu] }
 limits:
   max_active_per_member: 1
   max_queue_per_member: 2

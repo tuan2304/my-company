@@ -71,7 +71,7 @@ Ba cỡ việc dùng cùng khung này, chỉ khác điểm bắt đầu: *việc
 | **Trưởng nhóm** | Chỉ đọc | Xem tải của từng người, chia việc con (không chồng lấn file), duyệt hoặc trả bài |
 | **Nhân viên** | Sửa code trong phạm vi team | Làm việc con trong worktree riêng, có thể hỏi Trưởng nhóm, đồng nghiệp hoặc chính bạn khi vướng thật |
 
-Mỗi nhân viên làm tối đa 1 việc và giữ 2 việc chờ; tối đa 2 tiến trình `claude` chạy cùng lúc (đổi bằng `COMPANY_MAX_CONCURRENT`).
+Mỗi nhân viên làm tối đa 1 việc và giữ 2 việc chờ; tối đa 6 tiến trình `claude` chạy cùng lúc (đổi bằng `COMPANY_MAX_CONCURRENT`).
 
 ### Cơ chế bên dưới
 
@@ -157,7 +157,9 @@ conventions: |
   - Team viết code (backend, frontend, quality, devops) để `[]` thì **không bị giới hạn thư mục** (vẫn bị nhốt trong worktree và vẫn không đụng được `.env`, `.git`).
   - Team chỉ ghi tài liệu (design, security, report, khai `requires_folders: true` trong `team.md`) để `[]` thì **không ghi được file nào**: phải khai thư mục thì team mới làm được việc.
   - `doctor` cảnh báo khóa không khớp team nào, khóa cũ `reports` (tự hiểu là `report`), và team để rỗng.
-- `allowed_commands`: **chưa khai thì nhân viên không chạy được lệnh nào, kể cả test.** Chỉ liệt kê lệnh an toàn; mỗi mục `X` thành hai quy tắc của Claude Code là `Bash(X)` và `Bash(X *)`, nên khớp cả lệnh đó và lệnh đó kèm đối số (`npm test` khớp `npm test -- --watch=false`). `npm install` mặc định không nằm trong danh sách. Có thể dùng `*` trong mục (ví dụ `node tests/*` để chạy một test riêng) theo cú pháp quy tắc của Claude Code; cách này **chưa được thử với agent thật**, hãy chạy thử một việc nhỏ trước khi dựa vào nó.
+- `allowed_commands`: **chưa khai thì nhân viên không chạy được lệnh nào, kể cả test.** Chỉ liệt kê lệnh an toàn; mỗi mục `X` thành hai quy tắc của Claude Code là `Bash(X)` và `Bash(X *)`, nên khớp cả lệnh đó và lệnh đó kèm đối số (`npm test` khớp `npm test -- --watch=false`). `npm install` mặc định không nằm trong danh sách. Có thể dùng `*` trong mục (ví dụ `node tests/*` để chạy một test riêng) theo cú pháp quy tắc của Claude Code; mẫu `node tests/*` đã được thử với agent thật và khớp đúng.
+- `known_failures` (không bắt buộc): danh sách lỗi/test **đỏ sẵn từ trước** để agent không tốn lượt sửa lỗi không phải của mình; được đưa vào lời giao việc. Không cần tự viết: đứng ở nhánh gốc chạy `npm run baseline -- --project <thư mục dự án>` (thêm `--timeout <giây>`, mặc định 300) rồi dán khối in ra vào hồ sơ.
+- Dự án Next.js: **đừng cho `build` vào `allowed_commands`**. `node_modules` trong worktree là junction nên Next.js build không chạy được ở đó (typecheck và test vẫn chạy); `init` đã tự bỏ `build` cho dự án Next.js.
 - `role_skills` (không bắt buộc): thêm skill cho **một vai trò** mà không phải sao cả team vào `local/teams/`, ví dụ `role_skills: { qa: [ponytail] }`. Skill được cộng thêm vào danh sách của file vai trò. Xem vai trò nào nạp gì: `npm run skills -- roles`.
 - `conventions`: quy ước code của dự án, được đưa vào lời nhắc của mọi nhân viên. Viết càng đúng thì kết quả càng ít phải sửa.
 
@@ -280,7 +282,7 @@ Skill được tải vào khu cách ly, **hãy tự đọc `SKILL.md` và mọi 
 |---|---|---|
 | `OFFICE_PORT` | 4310 | Cổng giao diện |
 | `COMPANY_PROJECT_ROOT` | thư mục cha của công cụ | Gốc dự án |
-| `COMPANY_MAX_CONCURRENT` | 2 | Số agent chạy cùng lúc |
+| `COMPANY_MAX_CONCURRENT` | 6 | Số agent chạy cùng lúc |
 | `COMPANY_PUBLIC_HOST` | (tắt) | Tên máy Tailscale, bật cổng từ xa |
 | `COMPANY_REMOTE_PORT` | 4311 | Cổng từ xa |
 | `COMPANY_BROWSER` | tự tìm Edge/Chrome | Trình duyệt để chụp ảnh |

@@ -370,7 +370,7 @@ test('API của yêu cầu, bảng tải team và nhật ký hội thoại', asy
     const workload = await (await get('/api/workload')).json();
     assert.deepEqual(workload.teams.map((t) => t.id).sort(), ['backend', 'design', 'devops', 'frontend', 'management', 'quality', 'report', 'security']);
     const backend = workload.teams.find((t) => t.id === 'backend');
-    assert.deepEqual(backend.workers.map((w) => w.name), ['An', 'Bình', 'Hương']);
+    assert.deepEqual(backend.workers.map((w) => w.name), ['An', 'Bình', 'Hương', 'Khang', 'Nam']);
     assert.equal(workload.teams.find((t) => t.id === 'management').workers.length, 0);
 
     const feed = await (await get('/api/feed?limit=200')).json();

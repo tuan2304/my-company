@@ -6,6 +6,7 @@ import { epicJobRescueBlock } from './epics.mjs';
 import { describeFolders, folderRules, inFolders } from './path-guard.mjs';
 import { findMember, workersOf } from './teams.mjs';
 import { branchDiff, checkRepo, integrateBranches, removeWorktreeKeepBranch, resolveRef } from './worktree.mjs';
+import { knownFailuresLine } from './project.mjs';
 
 /**
  * Điều phối việc lớn (job) của một team:
@@ -626,6 +627,8 @@ export function buildLeadSystemPrompt({ member, team, role, project, kind }) {
     for (const [id, list] of Object.entries(project.folders).filter(([id, l]) => id !== team.id && l.length)) lines.push(`- Thư mục của team ${id} (không giao việc ở đây): ${describeFolders(list)}`);
     const commands = Object.entries(project.commands);
     if (commands.length) lines.push(`- Lệnh: ${commands.map(([k, v]) => `${k} = ${v}`).join('; ')}`);
+    const failLine = knownFailuresLine(project);
+    if (failLine) lines.push(failLine);
     if (project.conventions) lines.push(`- Quy ước:\n${project.conventions}`);
     parts.push(lines.join('\n'));
   }

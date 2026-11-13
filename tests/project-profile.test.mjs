@@ -10,7 +10,8 @@ import { parse as parseYaml } from 'yaml';
 import { checkFolders, checkProjectRoot, checkRoleSkills } from '../server/doctor.mjs';
 import { Jobs } from '../server/jobs.mjs';
 import { decide, describeFolders, folderRules, inFolders } from '../server/path-guard.mjs';
-import { detectStack, loadProject, renderProjectDraft } from '../server/project.mjs';
+import { pickCheckCommands, renderKnownFailures, runBaseline, runCheck } from '../server/baseline.mjs';
+import { detectStack, knownFailuresLine, loadProject, renderProjectDraft } from '../server/project.mjs';
 import {
   composeSkillPack, describeRoleSkills, hashDir, installSkill, readLock, recordFileHashes, verifyLibrary, writeLock,
 } from '../server/skills.mjs';
@@ -334,4 +335,96 @@ test('skills roles / doctor: devops-engineer nạp ponytail; skill khai mà bị
   const text = warned.map((c) => `${c.title} | ${c.detail}`).join('\n');
   assert.match(text, /quality\/qa: khong-co \(chưa được duyệt/);
   assert.match(text, /vai trò không tồn tại: devop-engineer/);
+});
+
+// ---------- known_failures, baseline, Next.js không cho build trong worktree ----------
+
+test('known_failures: đọc từ hồ sơ và thành một dòng nhắc cho agent; không khai thì không có dòng', () => {
+  const dir = tmpDir();
+  try {
+    write(dir, 'local/project.md', '---\nname: x\nknown_failures:\n  - "npm test: a.cjs chết lúc thoát"\n  - "npm run lint: 3 cảnh báo cũ"\n---\n');
+    const project = loadProject(path.join(dir, 'local'));
+    assert.deepEqual(project.knownFailures, ['npm test: a.cjs chết lúc thoát', 'npm run lint: 3 cảnh báo cũ']);
+    const line = knownFailuresLine(project);
+    assert.match(line, /SẴN từ trước/);
+    assert.match(line, /a\.cjs chết lúc thoát; npm run lint/);
+    write(dir, 'local/project.md', '---\nname: y\n---\n');
+    assert.equal(knownFailuresLine(loadProject(path.join(dir, 'local'))), null);
+    assert.equal(knownFailuresLine(null), null);
+  } finally {
+    removeDir(dir);
+  }
+});
+
+test('init: dự án Next.js không đưa build vào allowed_commands (build không chạy được trong worktree), dự án khác vẫn có', () => {
+  const commands = { install: 'npm install', test: 'npm test', build: 'npm run build', 'build:ci': 'npm run build:ci' };
+  const dir = tmpDir();
+  try {
+    write(dir, 'local/project.md', renderProjectDraft({ name: 'n', stack: ['Next.js'], commands, skipped: [] }));
+    const next = loadProject(path.join(dir, 'local'));
+    assert.ok(next.allowedCommands.includes('npm test'));
+    assert.ok(!next.allowedCommands.some((c) => c.includes('build')));
+    assert.equal(next.commands.build, 'npm run build', 'build vẫn nằm trong commands để agent biết');
+    write(dir, 'local/project.md', renderProjectDraft({ name: 'n', stack: ['Express'], commands, skipped: [] }));
+    assert.ok(loadProject(path.join(dir, 'local')).allowedCommands.includes('npm run build'));
+  } finally {
+    removeDir(dir);
+  }
+});
+
+test('baseline: chỉ chạy lệnh kiểm tra, ghi nhận lệnh đỏ (mã thoát, hết giờ) và in khối known_failures hợp lệ', async () => {
+  const commands = { install: 'npm install', test: 'T', 'test:core': 'C', typecheck: 'Y', build: 'B', deploy: 'D', lint: 'L' };
+  assert.deepEqual(pickCheckCommands(commands).map(([k]) => k), ['test', 'test:core', 'typecheck', 'lint']);
+  const ran = [];
+  const fake = async (cmd) => {
+    ran.push(cmd);
+    if (cmd === 'C') return { code: 127, timedOut: false, tail: 'Assertion failed: x' };
+    if (cmd === 'L') return { code: -1, timedOut: true, tail: '' };
+    return { code: 0, timedOut: false, tail: '' };
+  };
+  const result = await runBaseline({ commands }, { cwd: '.', log: () => {}, run: fake });
+  assert.deepEqual(ran, ['T', 'C', 'Y', 'L']);
+  assert.equal(result.failures.length, 2);
+  assert.match(result.failures[0], /^C \(test:core\) thoát với mã 127; dòng cuối: Assertion failed: x/);
+  assert.match(result.failures[1], /quá thời gian chờ/);
+  const block = renderKnownFailures(result.failures);
+  const parsed = parseYaml(block);
+  assert.equal(parsed.known_failures.length, 2);
+  assert.match(renderKnownFailures([]), /^# Mọi lệnh kiểm tra đều xanh/);
+  assert.deepEqual((await runBaseline({ commands: {} }, { run: fake })).checks, []);
+});
+
+test('baseline: runCheck chạy lệnh thật, lấy mã thoát và dòng cuối, và dừng lệnh chạy quá giờ', async () => {
+  const ok = await runCheck('node -e "console.log(1)"', { cwd: process.cwd(), timeoutMs: 20_000 });
+  assert.equal(ok.code, 0);
+  const bad = await runCheck('node -e "console.error(\'hong roi\'); process.exit(3)"', { cwd: process.cwd(), timeoutMs: 20_000 });
+  assert.equal(bad.code, 3);
+  assert.match(bad.tail, /hong roi/);
+  const started = Date.now();
+  const slow = await runCheck('node -e "setTimeout(()=>{}, 60000)"', { cwd: process.cwd(), timeoutMs: 1500 });
+  assert.equal(slow.timedOut, true);
+  assert.ok(Date.now() - started < 15_000, 'phải dừng sớm, không đợi hết 60 giây');
+});
+
+test('CLI: file bin/cli.mjs nạp được, help chạy, baseline từ chối thư mục không có package.json', async () => {
+  const cli = path.resolve('bin/cli.mjs');
+  const run = (args, env = {}) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, [cli, ...args], { env: { ...process.env, ...env }, windowsHide: true });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      child.on('close', (code) => resolve({ code, out }));
+    });
+  const help = await run(['help']);
+  assert.equal(help.code, 0, help.out);
+  assert.match(help.out, /baseline/);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-baseline-'));
+  try {
+    const res = await run(['baseline', '--project', dir]);
+    assert.equal(res.code, 2, res.out);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-import path from 'node:path';
 import test from 'node:test';
 import { BODY_RADIUS, deskHitBy, obstacleHitBy, planPath, standSpot, wallHitBy, walkable } from '../src/office/flow.ts';
 import { countByTeam, layoutBuilding, layoutOffice, POD_W, podsPerRow, SEATS_PER_POD, TEAM_COLORS } from '../src/office/layout.ts';
-import { loadTeams, summarizeTeams } from '../server/teams.mjs';
-import { REPO } from './helpers.mjs';
+import { compactTeams, fullTeams } from './roster.mjs';
 
-const realTeams = () => summarizeTeams(loadTeams({ teamsDir: path.join(REPO, 'teams') }));
+// realTeams: đội hình gọn một tầng cho các test hành vi; fullTeams: đội hình thật đầy đủ cho test đếm người.
+const realTeams = compactTeams;
 const member = (name, role, isLead = false) => ({ name, role, title: role, model: 'sonnet', effort: 'low', strengths: [], isLead });
 const team = (id, n) => ({ id, name: id, lead: 'L' + id, members: [member('L' + id, 'lead', true), ...Array.from({ length: n }, (_, i) => member(`${id}${i}`, 'dev'))] });
 const director = { id: 'management', name: 'Ban giám đốc', lead: 'Hòa', members: [member('Hòa', 'director', true)] };
@@ -48,6 +47,30 @@ test('số nhân vật theo từng team khớp đúng cấu hình thật; sáu t
   assert.deepEqual(b.floors[1].zones.map((z) => z.id), work.slice(6));
   assert.deepEqual([...work].sort(), ['backend', 'design', 'devops', 'frontend', 'quality', 'report', 'security']);
   assert.ok(b.people.every((p) => b.floorOf[p.name] === (work.slice(6).includes(p.teamId) ? 1 : 0) && p.floor === b.floorOf[p.name]));
+});
+
+test('đội hình thật đầy đủ (team tới 6 người, hai cụm bàn): không ai mất, không ai ngồi chồng, ngồi đúng khu của team, mỗi team nằm trọn một tầng', () => {
+  const teams = fullTeams();
+  const b = layoutBuilding(teams);
+  const total = teams.reduce((n, t) => n + t.members.length, 0);
+  assert.equal(b.people.length, total, 'đủ mọi người');
+  assert.equal(new Set(b.people.map((p) => p.name)).size, total, 'không trùng tên');
+  const expected = Object.fromEntries(teams.filter((t) => t.id !== 'management').map((t) => [t.id, t.members.length]));
+  assert.deepEqual(countByTeam(b), { ...expected, management: 1 });
+  const work = teams.filter((t) => t.id !== 'management').map((t) => t.id);
+  const zoneIds = b.floors.flatMap((f) => f.zones.map((z) => z.id));
+  assert.deepEqual([...zoneIds].sort(), [...work].sort(), 'mỗi team đúng một khu, trên đúng một tầng');
+  for (const f of b.floors) {
+    const onFloor = b.people.filter((p) => p.floor === f.floor && p.teamId !== 'management');
+    for (let i = 0; i < onFloor.length; i += 1) for (let j = i + 1; j < onFloor.length; j += 1) {
+      assert.ok(Math.hypot(onFloor[i].x - onFloor[j].x, onFloor[i].z - onFloor[j].z) > 1.5, `tầng ${f.floor + 1}: ${onFloor[i].name} và ${onFloor[j].name} ngồi quá gần nhau`);
+    }
+    for (const p of onFloor) {
+      const zone = f.zones.find((z) => z.id === p.teamId);
+      assert.ok(zone, `${p.name} ngồi cùng tầng với khu team ${p.teamId}`);
+      assert.ok(inside(zone, p.x, p.z, 0.5), `${p.name} ngồi trong khu của team ${p.teamId}`);
+    }
+  }
 });
 
 test('tòa nhà có hình dạng cố định tỉ lệ 3:2; thêm team không làm nó dài ra', () => {

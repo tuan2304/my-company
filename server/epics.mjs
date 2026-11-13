@@ -3,6 +3,7 @@ import { UserError } from './errors.mjs';
 import { shorten } from './guard.mjs';
 import { findMember, workersOf } from './teams.mjs';
 import { checkRepo, integrateBranches, resolveRef } from './worktree.mjs';
+import { knownFailuresLine } from './project.mjs';
 
 /**
  * Yêu cầu của chủ giao cho cả công ty:
@@ -500,6 +501,8 @@ export function buildDirectorSystemPrompt({ member, team, role, project, kind })
     for (const [id, list] of Object.entries(project.folders).filter(([, l]) => l.length)) lines.push(`- Thư mục của ${id}: ${describeFolders(list)}`);
     const commands = Object.entries(project.commands);
     if (commands.length) lines.push(`- Lệnh: ${commands.map(([k, v]) => `${k} = ${v}`).join('; ')}`);
+    const failLine = knownFailuresLine(project);
+    if (failLine) lines.push(failLine);
     if (project.conventions) lines.push(`- Quy ước:\n${project.conventions}`);
     parts.push(lines.join('\n'));
   }

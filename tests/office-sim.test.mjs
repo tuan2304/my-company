@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict';
-import path from 'node:path';
 import test from 'node:test';
 import { deskHitBy, obstacleHitBy, wallHitBy } from '../src/office/flow.ts';
 import { layoutBuilding, layoutOffice } from '../src/office/layout.ts';
 import { dirOf, MAX_OUT_RATIO, OfficeSim, WALK_SPEED } from '../src/office/sim.ts';
 import { IDLE_VIEW } from '../src/office/status.ts';
-import { loadTeams, summarizeTeams } from '../server/teams.mjs';
-import { REPO } from './helpers.mjs';
+import { compactTeams } from './roster.mjs';
 
-const layout = () => layoutOffice(summarizeTeams(loadTeams({ teamsDir: path.join(REPO, 'teams') })));
+const layout = () => layoutOffice(compactTeams());
 const NOW = 1_800_000_000_000;
 const view = (over = {}) => ({ ...IDLE_VIEW, ...over });
 const WORK = { status: 'working', activity: 'typing' };

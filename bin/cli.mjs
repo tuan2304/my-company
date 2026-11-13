@@ -6,6 +6,7 @@ import readline from 'node:readline/promises';
 import { promisify } from 'node:util';
 import { clearPin, hasPin, MIN_PIN_LENGTH, pinProblem, setPin } from '../server/auth.mjs';
 import { ensureDirs, loadConfig, TOOL_DIR } from '../server/config.mjs';
+import { runBaseline, renderKnownFailures } from '../server/baseline.mjs';
 import { runDoctor } from '../server/doctor.mjs';
 import { detectStack, loadProject, renderProjectDraft } from '../server/project.mjs';
 import { startServer } from '../server/index.mjs';
@@ -22,6 +23,7 @@ Cách dùng:
   my-company init     [--project <thư mục>]   Chuẩn bị dự án: ẩn công cụ khỏi git, tạo hồ sơ nháp
   my-company start    [--dev] [--port <số>]    Chạy máy chủ và giao diện (mặc định cổng 4310)
   my-company doctor                            Kiểm tra môi trường
+  my-company baseline [--timeout <giây>]       Chạy lệnh kiểm tra của dự án trên nhánh hiện tại, in khối known_failures cho test đã đỏ sẵn
   my-company pin set|clear|status              Đặt, xóa hoặc xem PIN cho truy cập từ xa (cần khi dùng Tailscale)
   my-company skills list                       Liệt kê skill đã duyệt
   my-company skills verify                     Kiểm tra skill còn nguyên vẹn so với skills.lock (chỉ ra file thiếu/bị sửa/thừa)
@@ -41,7 +43,7 @@ function parseArgs(argv) {
     if (arg.startsWith('--')) {
       const key = arg.slice(2);
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--') && ['project', 'port', 'name', 'exclude'].includes(key)) {
+      if (next !== undefined && !next.startsWith('--') && ['project', 'port', 'name', 'exclude', 'timeout'].includes(key)) {
         flags[key] = next;
         i += 1;
       } else flags[key] = true;
@@ -62,6 +64,37 @@ async function cmdDoctor(cfg) {
   const warned = checks.filter((c) => c.level === 'warn').length;
   console.log(`\n${failed} lỗi, ${warned} chú ý.`);
   return failed ? 1 : 0;
+}
+
+async function cmdBaseline(cfg, flags) {
+  const project = loadProject(cfg.localDir);
+  if (!project) {
+    console.error('Chưa có hồ sơ dự án (local/project.md). Chạy "npm run init" trước.');
+    return 2;
+  }
+  const seconds = typeof flags.timeout === 'string' ? Number.parseInt(flags.timeout, 10) : 300;
+  if (!Number.isFinite(seconds) || seconds < 1) {
+    console.error('--timeout phải là số giây dương.');
+    return 2;
+  }
+  const usesNode = Object.values(project.commands ?? {}).some((c) => /^\s*(npm|npx|pnpm|yarn)\b/.test(String(c)));
+  if (usesNode && !fs.existsSync(path.join(cfg.projectRoot, 'package.json'))) {
+    console.error(`Không có package.json ở ${cfg.projectRoot}, lệnh npm sẽ đỏ vì sai thư mục chứ không phải lỗi thật.`);
+    console.error('Chỉ đúng dự án bằng --project <thư mục> hoặc biến COMPANY_PROJECT_ROOT rồi chạy lại.');
+    return 2;
+  }
+  console.log(`Chạy lệnh kiểm tra của dự án ở: ${cfg.projectRoot} (mỗi lệnh tối đa ${seconds} giây).`);
+  console.log('Nên chạy khi đang đứng ở nhánh gốc, chưa có thay đổi dở của nhân viên.\n');
+  const { checks, failures } = await runBaseline(project, { cwd: cfg.projectRoot, timeoutMs: seconds * 1000 });
+  if (!checks.length) {
+    console.log('Hồ sơ không có lệnh kiểm tra nào (test, typecheck, verify, check, lint) trong "commands".');
+    return 0;
+  }
+  console.log(`
+Dán khối này vào local/project.md (phần đầu, giữa hai dấu ---):
+
+${renderKnownFailures(failures)}`);
+  return 0;
 }
 
 async function cmdInit(cfg) {
@@ -315,6 +348,7 @@ async function main() {
     case 'init': return cmdInit(cfg);
     case 'start': return cmdStart(cfg, flags);
     case 'doctor': return cmdDoctor(cfg);
+    case 'baseline': return cmdBaseline(cfg, flags);
     case 'pin': return cmdPin(cfg, rest);
     case 'skills': return cmdSkills(cfg, rest, flags);
     default:

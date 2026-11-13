@@ -59,7 +59,7 @@ export function loadConfig({ projectRoot, overrides = {} } = {}) {
     worktreesDir: path.resolve(
       process.env.COMPANY_WORKTREES_DIR || path.join(path.dirname(root), `${projectName}-worktrees`),
     ),
-    maxConcurrent: intFromEnv('COMPANY_MAX_CONCURRENT', 2),
+    maxConcurrent: intFromEnv('COMPANY_MAX_CONCURRENT', 6),
     // Dự phòng thêm sau giờ hạn mức hồi trước khi thử lại.
     quotaMarginMs: 30_000,
     // Thời gian tối đa cho một lượt trả lời câu hỏi của đồng nghiệp (phút); quá hạn thì người hỏi tự quyết.

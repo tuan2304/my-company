@@ -6,6 +6,8 @@ requires_folders: true
 members:
   - { name: Thảo, role: lead }
   - { name: Mai, role: reporter, strengths: [báo-cáo-push, tóm-tắt-thay-đổi] }
+  - { name: Lộc, role: reporter, strengths: [số-liệu, biểu-đồ] }
+  - { name: Quỳnh, role: reporter, strengths: [ghi-chú-phát-hành, tóm-tắt] }
 limits:
   max_active_per_member: 1
   max_queue_per_member: 2

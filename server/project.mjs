@@ -60,9 +60,18 @@ export function loadProject(localDir) {
     preview: parsePreview(data.preview),
     // Thư mục của dự án được nối (junction) vào mỗi worktree để chạy test mà không phải cài lại, ví dụ node_modules.
     worktreeLinks: asList(data.worktree_links ?? ['node_modules']),
+    // Lỗi/test đang đỏ SẴN từ trước (không do nhân viên gây ra): báo cho agent khỏi tốn lượt sửa nhầm.
+    knownFailures: asList(data.known_failures),
     conventions: String(data.conventions ?? '').trim(),
     notes: body,
   };
+}
+
+/** Dòng nhắc đưa vào lời nhắc của agent; null khi hồ sơ không khai lỗi có sẵn. */
+export function knownFailuresLine(project) {
+  const list = project?.knownFailures ?? [];
+  if (!list.length) return null;
+  return `- Lỗi có SẴN từ trước, không do bạn gây ra (chỉ sửa nếu việc được giao đúng là sửa nó; nếu không, ghi rõ trong báo cáo rồi bỏ qua): ${list.join('; ')}`;
 }
 
 // Script đáng cho nhân viên tự chạy: kiểm tra, không đổi gì bên ngoài, chạy xong thì thoát.
@@ -151,12 +160,22 @@ export function renderProjectDraft({ name, stack, commands, skipped = [] }) {
   ];
   for (const [key, value] of Object.entries(commands)) lines.push(`  ${yamlKey(key)}: ${value}`);
   if (skipped.length) lines.push(`  # Cố ý KHÔNG đưa vào (chạy mãi hoặc đụng dịch vụ/dữ liệu thật): ${skipped.map((s) => s.name).join(', ')}`);
-  const allowed = ['git status', 'git diff', ...Object.values(commands).filter((c) => c !== commands.install)];
+  // Next.js: `build` không chạy được trong worktree dùng node_modules nối (đã thử: Turbopack và webpack đều không tìm thấy next),
+  // nên không đưa vào allowed_commands để nhân viên khỏi tốn lượt chạy rồi báo lỗi.
+  const nextBuild = stack.includes('Next.js');
+  const allowed = ['git status', 'git diff', ...Object.entries(commands)
+    .filter(([key, c]) => c !== commands.install && !(nextBuild && /^build([:._-].*)?$/.test(key)))
+    .map(([, c]) => c)];
   lines.push(
     '',
     '# Lệnh Bash nhân viên được TỰ chạy. Khớp theo tiền tố: "npm run test" cho phép cả "npm run test -- --grep x".',
     '# Chỉ để lệnh đọc hoặc an toàn. Không thêm dev/start (chạy mãi), deploy, publish. git push luôn bị chặn.',
     `allowed_commands: [${[...new Set(allowed)].join(', ')}]`,
+    ...(nextBuild ? ['# Next.js: lệnh build chưa được cho phép vì không chạy được trong worktree (node_modules chỉ được nối vào). Kiểm bằng typecheck/test; build chạy tay ở dự án gốc.'] : []),
+    '',
+    '# Test/lệnh đang ĐỎ SẴN trên nhánh gốc (chạy "npm run baseline" để lấy danh sách), để nhân viên không đi sửa nhầm:',
+    '# known_failures:',
+    '#   - "npm run test:core: tests/abc.cjs chết lúc thoát (mã 127)"',
     '',
     '# Thêm skill cho MỘT vai trò mà không phải sao cả team vào local/teams (cộng thêm, không thay skill sẵn có):',
     '# role_skills:',

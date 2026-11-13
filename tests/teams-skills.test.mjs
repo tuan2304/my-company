@@ -22,9 +22,9 @@ test('loadTeams đọc đội hình thật của repo', () => {
   const teams = loadTeams({ teamsDir: path.join(REPO, 'teams') });
   const backend = teams.find((t) => t.id === 'backend');
   assert.ok(backend, 'có team backend');
-  assert.deepEqual(backend.members.map((m) => m.name), ['Minh', 'An', 'Bình', 'Hương']);
+  assert.deepEqual(backend.members.map((m) => m.name), ['Minh', 'An', 'Bình', 'Hương', 'Khang', 'Nam']);
   assert.equal(backend.lead, 'Minh');
-  assert.deepEqual(workersOf(backend).map((m) => m.name), ['An', 'Bình', 'Hương'], 'Trưởng nhóm không tính là nhân viên làm việc');
+  assert.deepEqual(workersOf(backend).map((m) => m.name), ['An', 'Bình', 'Hương', 'Khang', 'Nam'], 'Trưởng nhóm không tính là nhân viên làm việc');
   const lead = findMember(teams, 'minh');
   assert.equal(lead.isLead, true);
   assert.deepEqual([lead.role.model, lead.role.review_model], ['opus', 'sonnet']);
@@ -210,10 +210,10 @@ test('team DevOps, Thiết kế, Bảo mật và Báo cáo: mỗi team có Trư�
   const lockFile = path.join(REPO, 'skills.lock');
   const libraryDir = path.join(REPO, 'skills', 'library');
   const expected = {
-    devops: { lead: 'Khôi', worker: 'Sơn', role: 'devops-engineer' },
-    design: { lead: 'Ngọc', worker: 'Vy', role: 'designer' },
-    security: { lead: 'Hải', worker: 'Trinh', role: 'security-reviewer' },
-    report: { lead: 'Thảo', worker: 'Mai', role: 'reporter' },
+    devops: { lead: 'Khôi', workers: ['Sơn', 'Đạt', 'Tâm', 'Nhi'], role: 'devops-engineer' },
+    design: { lead: 'Ngọc', workers: ['Vy', 'Linh', 'Hà', 'Tiên'], role: 'designer' },
+    security: { lead: 'Hải', workers: ['Trinh', 'Khoa', 'Hùng', 'Thu'], role: 'security-reviewer' },
+    report: { lead: 'Thảo', workers: ['Mai', 'Lộc', 'Quỳnh'], role: 'reporter' },
   };
   const dir = tmpDir();
   try {
@@ -221,7 +221,7 @@ test('team DevOps, Thiết kế, Bảo mật và Báo cáo: mỗi team có Trư�
       const team = teams.find((t) => t.id === id);
       assert.ok(team, `có team ${id}`);
       assert.equal(team.lead, want.lead);
-      assert.deepEqual(workersOf(team).map((m) => [m.name, m.role]), [[want.worker, want.role]]);
+      assert.deepEqual(workersOf(team).map((m) => [m.name, m.role]), want.workers.map((name) => [name, want.role]));
       assert.ok(team.description.length > 80, `team ${id} có mô tả để Giám đốc biết khi nào giao việc`);
       for (const role of Object.values(team.roles)) {
         assert.notEqual(role.model, 'fable');

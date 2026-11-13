@@ -6,6 +6,9 @@ requires_folders: true
 members:
   - { name: Hải, role: lead }
   - { name: Trinh, role: security-reviewer, strengths: [review-mã, xác-thực, phụ-thuộc] }
+  - { name: Khoa, role: security-reviewer, strengths: [dữ-liệu-vào, lộ-bí-mật, cấu-hình-nguy-hiểm] }
+  - { name: Hùng, role: security-reviewer, strengths: [mã-hóa, phân-quyền] }
+  - { name: Thu, role: security-reviewer, strengths: [nhật-ký, tuân-thủ] }
 limits:
   max_active_per_member: 1
   max_queue_per_member: 2

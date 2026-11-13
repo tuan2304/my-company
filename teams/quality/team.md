@@ -5,6 +5,9 @@ members:
   - { name: Phúc, role: lead }
   - { name: Quân, role: qa, strengths: [tích-hợp, api] }
   - { name: Giang, role: qa, strengths: [e2e, giao-diện] }
+  - { name: Tú, role: qa, strengths: [hồi-quy, dữ-liệu-kiểm-thử] }
+  - { name: Bảo, role: qa, strengths: [hiệu-năng, kiểm-thử-tải] }
+  - { name: Oanh, role: qa, strengths: [xác-nhận-lỗi, kịch-bản-người-dùng] }
 limits:
   max_active_per_member: 1
   max_queue_per_member: 2

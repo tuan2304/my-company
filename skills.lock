@@ -165,6 +165,39 @@
         "SKILL.md": "9badd22a32e19cb884e46dfa8d3aae82bb81dfa5484105b8b4f0262df823a509"
       }
     },
+    "ponytail-audit": {
+      "source": "DietrichGebert/ponytail/skills/ponytail-audit",
+      "commit": "96608e078b2d5ea607c5c3b8b5a54d1c1fba6846",
+      "license": "MIT License",
+      "excluded": [],
+      "sha256": "e06adf4f4ee04dc135b8ff0ce9f168590c0540c69c02fc76400b6ad3bb11f10e",
+      "files": {
+        "SKILL.md": "2b3223a02c386d1263e1b08343cb8eb3a53e444cdafb1d79e26c8ec2a8fcad28"
+      },
+      "addedAt": "2026-11-12T20:06:39.756Z"
+    },
+    "ponytail-debt": {
+      "source": "DietrichGebert/ponytail/skills/ponytail-debt",
+      "commit": "96608e078b2d5ea607c5c3b8b5a54d1c1fba6846",
+      "license": "MIT License",
+      "excluded": [],
+      "sha256": "576b8ad55b041a9b87e50719534a7148e68752ca02ceec4b1afdf364bf142aa4",
+      "files": {
+        "SKILL.md": "b5ec2762f6ba8c4af9ea7173aa6c9f91b88655a25e43f9de0264f6ce8722b25f"
+      },
+      "addedAt": "2026-11-12T20:06:49.464Z"
+    },
+    "ponytail-review": {
+      "source": "DietrichGebert/ponytail/skills/ponytail-review",
+      "commit": "96608e078b2d5ea607c5c3b8b5a54d1c1fba6846",
+      "license": "MIT License",
+      "excluded": [],
+      "sha256": "0a56beb5b3b9b89b363ce5d0a9ae5263cd431a6ecc9b3f57d7e795a889d626fd",
+      "files": {
+        "SKILL.md": "33fe4ebe22a460924e5d4a261e223df22e409cc94ab76182bee9fb91a3ef022e"
+      },
+      "addedAt": "2026-11-12T20:05:27.891Z"
+    },
     "react-best-practices": {
       "source": "vercel-labs/agent-skills/skills/react-best-practices",
       "commit": "1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62",

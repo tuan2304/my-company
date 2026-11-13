@@ -203,7 +203,7 @@ Nhân viên đang làm việc có bốn công cụ hỏi (qua MCP của công ty
 
 Hồ sơ dự án có thể khai `worktree_links: [node_modules]` để nối thư mục phụ thuộc của dự án vào mỗi worktree (mặc định là `node_modules`, không bị commit).
 - **Độ khó tự động:** mặc định hệ thống tự đánh giá độ khó của việc (một lần gọi `haiku` nhỏ) rồi chọn model: Đơn giản dùng `haiku`, Bình thường theo vai trò, Khó dùng `opus`. Việc hết số lượt mà chưa xong thì tự nâng một bậc và làm tiếp. Bạn có thể ép một mức khi giao việc. Không có model `fable`.
-- Tối đa 2 agent chạy cùng lúc (`COMPANY_MAX_CONCURRENT`), mỗi nhân viên một việc một lúc.
+- Tối đa 6 agent chạy cùng lúc (`COMPANY_MAX_CONCURRENT`), mỗi nhân viên một việc một lúc.
 - **Hết hạn mức Pro:** việc đang dở được lưu, cả công ty nghỉ đến giờ hạn mức hồi (đọc từ sự kiện `rate_limit_event`), rồi tự làm tiếp bằng `--resume`. Không dùng API.
 - Máy chủ chỉ nghe ở `127.0.0.1` và từ chối yêu cầu có `Host` hoặc `Origin` lạ.
 
@@ -257,7 +257,7 @@ Nút **"Thông báo"** ở đầu trang (mỗi thiết bị bật riêng). Máy 
 | `local/teams/` | Đè đội hình theo từng dự án (không commit) |
 | `skills/library/` + `skills.lock` | Skill đã duyệt, kèm mã băm để phát hiện bị sửa |
 
-Biến môi trường: `OFFICE_PORT` (4310), `COMPANY_PUBLIC_HOST` (tên máy Tailscale, bật cổng từ xa), `COMPANY_REMOTE_PORT` (4311), `COMPANY_PUSH_HOSTS` (dịch vụ thông báo đẩy thêm, hiếm khi cần), `COMPANY_MAX_CONCURRENT` (2), `COMPANY_DATA_DIR`, `COMPANY_LOCAL_DIR`, `COMPANY_WORKTREES_DIR`, `COMPANY_PROJECT_ROOT`.
+Biến môi trường: `OFFICE_PORT` (4310), `COMPANY_PUBLIC_HOST` (tên máy Tailscale, bật cổng từ xa), `COMPANY_REMOTE_PORT` (4311), `COMPANY_PUSH_HOSTS` (dịch vụ thông báo đẩy thêm, hiếm khi cần), `COMPANY_MAX_CONCURRENT` (6), `COMPANY_DATA_DIR`, `COMPANY_LOCAL_DIR`, `COMPANY_WORKTREES_DIR`, `COMPANY_PROJECT_ROOT`.
 
 ## Skill từ GitHub
 

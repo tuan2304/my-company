@@ -6,6 +6,9 @@ requires_folders: true
 members:
   - { name: Ngọc, role: lead }
   - { name: Vy, role: designer, strengths: [bố-cục, thiết-kế-hệ-thống, truy-cập] }
+  - { name: Linh, role: designer, strengths: [luồng-người-dùng, màu-sắc, trạng-thái-thành-phần] }
+  - { name: Hà, role: designer, strengths: [biểu-tượng, minh-họa] }
+  - { name: Tiên, role: designer, strengths: [chuyển-động, nội-dung-giao-diện] }
 limits:
   max_active_per_member: 1
   max_queue_per_member: 2
