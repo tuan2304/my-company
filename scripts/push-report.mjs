@@ -7,7 +7,9 @@
  *   node scripts/push-report.mjs --range <từ>..<đến>   chỉ viết báo cáo cho một khoảng commit
  *
  * Quy ước đầu ra:
- *   reports/<YYYY-MM>/<nội-dung-đã-làm>.md      mỗi lần push một file, tên file là việc đã làm
+ *   reports/<tên-dự-án>/<YYYY-MM>/<nội-dung-đã-làm>.md      mỗi lần push một file, tên file là việc đã làm
+ *   <tên-dự-án> mặc định là tên thư mục của kho đang báo cáo (chữ thường, không dấu, nối gạch ngang);
+ *   đổi bằng --project-name "Tên dự án" khi chạy lệnh.
  *
  * Làm việc theo Team Báo cáo (teams/report): người thu thập (hàm collect, đọc git), người viết (Mai, vai reporter,
  * Claude gói Pro, tùy chọn) và người kiểm (hàm validate, chắc chắn tên file và thư mục đúng quy ước).
@@ -25,6 +27,7 @@ import { sanitizedEnv } from '../server/guard.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const REPORT_DIR = 'reports';
 const MAX_NAME = 70;
+const MAX_PROJECT = 40;
 const AI_INPUT_MAX = 14000;
 const AI_TIMEOUT_MS = 180_000;
 
@@ -37,7 +40,7 @@ function git(args, { cwd = ROOT, allowFail = false } = {}) {
 }
 
 /** Chuyển một câu thành tên file: bỏ dấu tiếng Việt, chữ thường, nối bằng gạch ngang, cắt ở ranh giới từ. */
-export function slugify(text, max = MAX_NAME) {
+export function slugify(text, max = MAX_NAME, fallback = 'cap-nhat') {
   const base = String(text ?? '')
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
@@ -45,10 +48,15 @@ export function slugify(text, max = MAX_NAME) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
-  if (base.length <= max) return base || 'cap-nhat';
+  if (base.length <= max) return base || fallback;
   const cut = base.slice(0, max);
   const lastDash = cut.lastIndexOf('-');
-  return (lastDash > max * 0.5 ? cut.slice(0, lastDash) : cut).replace(/-+$/, '') || 'cap-nhat';
+  return (lastDash > max * 0.5 ? cut.slice(0, lastDash) : cut).replace(/-+$/, '') || fallback;
+}
+
+/** Tên thư mục dự án trong reports/: "web96photobooth_onl" thành "web96photobooth-onl". Rỗng thì dùng "du-an". */
+export function projectSlug(name) {
+  return slugify(name, MAX_PROJECT, 'du-an');
 }
 
 /** Người thu thập: đọc git để biết các commit và thay đổi trong khoảng commit. `commits` là danh sách sha, cũ tới mới. */
@@ -155,30 +163,31 @@ export function renderReport({ data, branch, title, summary, pushedAt, remoteUrl
   return `${out.join('\n')}\n`;
 }
 
-/** Người kiểm: đường dẫn phải là reports/<YYYY-MM>/<tên>.md, tên chỉ gồm chữ thường, số, gạch ngang. */
+/** Người kiểm: đường dẫn phải là reports/<tên-dự-án>/<YYYY-MM>/<tên>.md, tên dự án và tên file chỉ gồm chữ thường, số, gạch ngang. */
 export function validate(relPath) {
-  return /^reports\/\d{4}-\d{2}\/[a-z0-9]+(-[a-z0-9]+)*\.md$/.test(relPath.replace(/\\/g, '/'));
+  return /^reports\/[a-z0-9]+(-[a-z0-9]+)*\/\d{4}-\d{2}\/[a-z0-9]+(-[a-z0-9]+)*\.md$/.test(relPath.replace(/\\/g, '/'));
 }
 
-/** Chọn đường dẫn file chưa tồn tại: thêm -2, -3 nếu trùng tên. */
-export function pickPath(title, date, { root = ROOT } = {}) {
+/** Chọn đường dẫn file chưa tồn tại: thêm -2, -3 nếu trùng tên. `project` là tên dự án (chưa chuẩn hóa). */
+export function pickPath(title, date, { root = ROOT, project = path.basename(root) } = {}) {
   const month = date.toISOString().slice(0, 7);
   const slug = slugify(title);
+  const folder = projectSlug(project);
   for (let n = 1; n < 1000; n += 1) {
-    const rel = `${REPORT_DIR}/${month}/${n === 1 ? slug : `${slug}-${n}`}.md`;
+    const rel = `${REPORT_DIR}/${folder}/${month}/${n === 1 ? slug : `${slug}-${n}`}.md`;
     if (!fs.existsSync(path.join(root, rel))) return rel;
   }
   throw new Error('Quá nhiều báo cáo trùng tên.');
 }
 
 /** Viết báo cáo cho danh sách commit. Trả về đường dẫn tương đối, hoặc null nếu bỏ qua. */
-export function writeReport(commits, { branch, ai = true, now = new Date(), root = ROOT } = {}) {
+export function writeReport(commits, { branch, ai = true, now = new Date(), root = ROOT, project = path.basename(root) } = {}) {
   const data = collect(commits, { cwd: root });
   if (data.commits.length === 0 || onlyReports(data.files)) return null;
   const summary = ai ? writeSummary(data, branch, { cwd: root }) : null;
   const fallback = data.commits.at(-1).subject;
   const title = summary?.title || fallback;
-  const rel = pickPath(title, now, { root });
+  const rel = pickPath(title, now, { root, project });
   if (!validate(rel)) throw new Error(`Tên báo cáo không hợp lệ: ${rel}`);
   const remoteUrl = git(['remote', 'get-url', 'origin'], { cwd: root, allowFail: true }).replace(/\.git$/, '');
   const text = renderReport({ data, branch, title, summary: summary?.body, pushedAt: now.toISOString().slice(0, 10), remoteUrl: remoteUrl || null });
@@ -196,7 +205,25 @@ export function pendingCommits() {
   return out.split('\n').filter(Boolean);
 }
 
-function pushAndReport(args) {
+/** Tách tùy chọn `--tên giá-trị` (hoặc `--tên=giá-trị`) của công ty khỏi các tham số còn lại, để không chuyển nó cho `git push`. */
+export function takeOption(args, name) {
+  const rest = [];
+  let value;
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === name) {
+      value = args[i + 1];
+      i += 1;
+    } else if (args[i].startsWith(`${name}=`)) {
+      value = args[i].slice(name.length + 1);
+    } else {
+      rest.push(args[i]);
+    }
+  }
+  return { value: value?.trim() || undefined, rest };
+}
+
+function pushAndReport(allArgs) {
+  const { value: projectName, rest: args } = takeOption(allArgs, '--project-name');
   const ai = !args.includes('--no-ai');
   const gitArgs = args.filter((a) => a !== '--no-ai');
   const commits = pendingCommits();
@@ -204,7 +231,7 @@ function pushAndReport(args) {
   const push = spawnSync('git', ['push', ...gitArgs], { cwd: ROOT, stdio: 'inherit' });
   if (push.status !== 0) process.exit(push.status ?? 1);
   if (commits.length === 0) return console.log('Không có commit mới để báo cáo.');
-  const rel = writeReport(commits, { branch, ai });
+  const rel = writeReport(commits, { branch, ai, ...(projectName ? { project: projectName } : {}) });
   if (!rel) return console.log('Bỏ qua báo cáo: lần push này chỉ chứa thư mục reports/.');
   git(['add', '--', rel]);
   git(['commit', '-m', `Report: ${path.basename(rel, '.md')}`, '--', rel]);
@@ -214,14 +241,15 @@ function pushAndReport(args) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  const rangeAt = args.indexOf('--range');
+  const argv = process.argv.slice(2);
+  const rangeAt = argv.indexOf('--range');
   if (rangeAt >= 0) {
-    const commits = git(['rev-list', '--reverse', args[rangeAt + 1]]).split('\n').filter(Boolean);
+    const { value: projectName, rest: args } = takeOption(argv, '--project-name');
+    const commits = git(['rev-list', '--reverse', args[args.indexOf('--range') + 1]]).split('\n').filter(Boolean);
     const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
-    const rel = writeReport(commits, { branch, ai: !args.includes('--no-ai') });
+    const rel = writeReport(commits, { branch, ai: !args.includes('--no-ai'), ...(projectName ? { project: projectName } : {}) });
     console.log(rel ? `Đã ghi ${rel}` : 'Không có gì để báo cáo.');
   } else {
-    pushAndReport(args);
+    pushAndReport(argv);
   }
 }

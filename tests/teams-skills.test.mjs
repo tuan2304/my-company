@@ -243,7 +243,7 @@ test('team DevOps, Thiết kế, Bảo mật và Báo cáo: mỗi team có Trư�
     assert.equal(reporter.tools.includes('Write'), true);
     assert.equal(reporter.tools.includes('Edit'), false);
     assert.equal(reporter.model, 'haiku');
-    assert.match(reporter.body, /reports\/<năm-tháng>\/<việc-đã-làm>\.md/);
+    assert.match(reporter.body, /reports\/<tên-dự-án>\/<năm-tháng>\/<việc-đã-làm>\.md/);
     const devops = findMember(teams, 'Sơn').role;
     assert.match(devops.body, /Không triển khai/);
 

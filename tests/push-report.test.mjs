@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { collect, onlyReports, pickPath, renderReport, slugify, validate, writeReport, writeSummary } from '../scripts/push-report.mjs';
+import { collect, onlyReports, pickPath, projectSlug, renderReport, slugify, takeOption, validate, writeReport, writeSummary } from '../scripts/push-report.mjs';
 
 function sh(cwd, ...args) {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -35,30 +35,50 @@ test('slugify: bỏ dấu tiếng Việt, chỉ chữ thường số gạch ngan
   assert.equal(slugify('///'), 'cap-nhat');
   const long = slugify('Failure recovery, integrate button, skill contest, new UI shell; README rewrite and cleanup');
   assert.ok(long.length <= 70 && !long.endsWith('-'));
-  assert.ok(validate(`reports/2026-11/${long}.md`));
+  assert.ok(validate(`reports/du-an/2026-11/${long}.md`));
 });
 
-test('validate: chỉ nhận reports/<YYYY-MM>/<tên>.md', () => {
-  assert.ok(validate('reports/2026-11/them-nut.md'));
-  assert.ok(!validate('reports/them-nut.md'));
-  assert.ok(!validate('reports/2026-11/Them Nut.md'));
-  assert.ok(!validate('docs/2026-11/them-nut.md'));
-  assert.ok(!validate('reports/2026-11/../x.md'));
+test('projectSlug: tên dự án thành tên thư mục an toàn, rỗng thì "du-an"', () => {
+  assert.equal(projectSlug('web96photobooth_onl'), 'web96photobooth-onl');
+  assert.equal(projectSlug('Công ty Ảnh Đẹp'), 'cong-ty-anh-dep');
+  assert.equal(projectSlug('my-company'), 'my-company');
+  assert.equal(projectSlug('///'), 'du-an');
+  assert.equal(projectSlug(''), 'du-an');
+  assert.ok(projectSlug('a'.repeat(100)).length <= 40);
+});
+
+test('validate: chỉ nhận reports/<tên-dự-án>/<YYYY-MM>/<tên>.md', () => {
+  assert.ok(validate('reports/web96photobooth-onl/2026-11/them-nut.md'));
+  assert.ok(validate('reports\\my-company\\2026-11\\them-nut.md'), 'dấu gạch ngược của Windows cũng được');
+  assert.ok(!validate('reports/2026-11/them-nut.md'), 'thiếu thư mục dự án (kiểu cũ)');
+  assert.ok(!validate('reports/my-company/them-nut.md'), 'thiếu thư mục tháng');
+  assert.ok(!validate('reports/my-company/2026-11/Them Nut.md'));
+  assert.ok(!validate('reports/My Company/2026-11/them-nut.md'), 'tên dự án chưa chuẩn hóa');
+  assert.ok(!validate('docs/my-company/2026-11/them-nut.md'));
+  assert.ok(!validate('reports/my-company/2026-11/../x.md'));
+  assert.ok(!validate('reports/../2026-11/x.md'));
+});
+
+test('takeOption: tách --project-name khỏi tham số của git push', () => {
+  assert.deepEqual(takeOption(['origin', '--project-name', 'Web 96', 'main'], '--project-name'), { value: 'Web 96', rest: ['origin', 'main'] });
+  assert.deepEqual(takeOption(['--project-name=Web 96', '-u'], '--project-name'), { value: 'Web 96', rest: ['-u'] });
+  assert.deepEqual(takeOption(['origin', 'main'], '--project-name'), { value: undefined, rest: ['origin', 'main'] });
+  assert.equal(takeOption(['--project-name', '  '], '--project-name').value, undefined);
 });
 
 test('onlyReports: chỉ true khi mọi file nằm trong reports/', () => {
   assert.equal(onlyReports([]), false);
-  assert.equal(onlyReports([{ name: 'reports/2026-11/a.md' }]), true);
-  assert.equal(onlyReports([{ name: 'reports/2026-11/a.md' }, { name: 'src/a.ts' }]), false);
+  assert.equal(onlyReports([{ name: 'reports/my-company/2026-11/a.md' }]), true);
+  assert.equal(onlyReports([{ name: 'reports/my-company/2026-11/a.md' }, { name: 'src/a.ts' }]), false);
 });
 
-test('writeReport: mỗi lần push một file trong reports/<tháng>/, tên theo việc đã làm', () => {
+test('writeReport: mỗi lần push một file trong reports/<dự án>/<tháng>/, tên theo việc đã làm', () => {
   const dir = tempRepo();
   try {
     const a = commitFile(dir, 'src/a.ts', 'one\ntwo\n', 'Add login form');
     const b = commitFile(dir, 'docs/x.md', 'hi\n', 'Document login form');
-    const rel = writeReport([a, b], { branch: 'master', ai: false, now: new Date('2026-11-08T10:00:00Z'), root: dir });
-    assert.equal(rel, 'reports/2026-11/document-login-form.md');
+    const rel = writeReport([a, b], { branch: 'master', ai: false, now: new Date('2026-11-08T10:00:00Z'), root: dir, project: 'web96photobooth_onl' });
+    assert.equal(rel, 'reports/web96photobooth-onl/2026-11/document-login-form.md');
     const text = fs.readFileSync(path.join(dir, rel), 'utf8');
     assert.match(text, /^# Document login form/);
     assert.match(text, /Số commit: 2/);
@@ -67,12 +87,21 @@ test('writeReport: mỗi lần push một file trong reports/<tháng>/, tên the
     assert.match(text, /\| src \| 1 \| 2 \| 0 \|/);
 
     // Trùng tên thì thêm -2, không ghi đè.
-    const again = writeReport([a, b], { branch: 'master', ai: false, now: new Date('2026-11-09T10:00:00Z'), root: dir });
-    assert.equal(again, 'reports/2026-11/document-login-form-2.md');
+    const again = writeReport([a, b], { branch: 'master', ai: false, now: new Date('2026-11-09T10:00:00Z'), root: dir, project: 'web96photobooth_onl' });
+    assert.equal(again, 'reports/web96photobooth-onl/2026-11/document-login-form-2.md');
     assert.ok(fs.existsSync(path.join(dir, rel)));
 
     // Sang tháng khác thì vào thư mục con khác.
-    assert.equal(pickPath('Document login form', new Date('2026-12-01T00:00:00Z'), { root: dir }), 'reports/2026-12/document-login-form.md');
+    assert.equal(pickPath('Document login form', new Date('2026-12-01T00:00:00Z'), { root: dir, project: 'web96photobooth_onl' }), 'reports/web96photobooth-onl/2026-12/document-login-form.md');
+
+    // Dự án khác thì vào thư mục dự án khác: không lẫn, và không bị đánh số -2 vì trùng tên với dự án kia.
+    const other = writeReport([a, b], { branch: 'master', ai: false, now: new Date('2026-11-08T10:00:00Z'), root: dir, project: 'Cửa hàng ảnh' });
+    assert.equal(other, 'reports/cua-hang-anh/2026-11/document-login-form.md');
+
+    // Không nói tên dự án thì lấy tên thư mục của kho đang báo cáo.
+    const byFolder = writeReport([a, b], { branch: 'master', ai: false, now: new Date('2026-11-08T10:00:00Z'), root: dir });
+    assert.equal(byFolder, `reports/${projectSlug(path.basename(dir))}/2026-11/document-login-form.md`);
+    assert.ok(validate(byFolder));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -81,7 +110,7 @@ test('writeReport: mỗi lần push một file trong reports/<tháng>/, tên the
 test('writeReport: bỏ qua khi lần push chỉ chứa reports/ hoặc không có commit', () => {
   const dir = tempRepo();
   try {
-    const a = commitFile(dir, 'reports/2026-11/x.md', 'x\n', 'Report: x');
+    const a = commitFile(dir, 'reports/my-company/2026-11/x.md', 'x\n', 'Report: x');
     assert.equal(writeReport([a], { branch: 'master', ai: false, root: dir }), null);
     assert.equal(writeReport([], { branch: 'master', ai: false, root: dir }), null);
   } finally {
