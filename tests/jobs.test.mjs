@@ -6,8 +6,9 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb } from '../server/db.mjs';
 import { startServer } from '../server/index.mjs';
-import { findOverlap, normalizeFiles } from '../server/jobs.mjs';
-import { createWorktree, commitWorktree, linkDirs } from '../server/worktree.mjs';
+import { buildLeadSystemPrompt, findOverlap, MAX_SCOPE_ENTRIES, normalizeFiles } from '../server/jobs.mjs';
+import { findMember, loadTeams } from '../server/teams.mjs';
+import { copyFiles, createWorktree, commitWorktree, linkDirs, linkedDirs } from '../server/worktree.mjs';
 import { REPO, git, makeProject, removeDir, testConfig, tmpDir, waitFor } from './helpers.mjs';
 
 const FAKE_KEYS = ['FAKE_CLAUDE_LOG', 'FAKE_CLAUDE_SCENARIO', 'FAKE_CLAUDE_TRIAGE', 'FAKE_PLAN', 'FAKE_REVIEW', 'FAKE_REVIEW_MAP', 'FAKE_UNIQUE', 'FAKE_CONFLICT', 'FAKE_WORK_DELAY_MS'];
@@ -140,6 +141,9 @@ test('assign từ chối: trùng phạm vi file, trùng tiêu đề, thiếu fil
     assert.throws(() => assign({ title: 'C', files: [] }), /Thiếu "files"/);
     assert.throws(() => assign({ title: 'C', files: ['.'] }), /cụ thể/);
     assert.throws(() => assign({ title: 'C', files: ['../ngoai'] }), /không hợp lệ/);
+    // Việc con ôm quá nhiều chỗ thì bị từ chối: nhân viên sẽ hết lượt giữa chừng (bài học web96).
+    const many = Array.from({ length: MAX_SCOPE_ENTRIES + 1 }, (_, i) => `src/x${i}.js`);
+    assert.throws(() => assign({ member: 'Bình', title: 'To', files: many }), /quá 6: việc này quá to/);
     assert.throws(() => assign({ member: 'Ma', title: 'C', files: ['src/docs'] }), /Không có nhân viên "Ma".*An, Bình/);
     assert.throws(() => assign({ member: 'Minh', title: 'C', files: ['src/docs'] }), /Không có nhân viên "Minh"/, 'không giao việc làm cho Trưởng nhóm');
     assert.throws(() => assign({ title: 'C', files: ['src/docs'], level: 'cực khó' }), /level/);
@@ -379,6 +383,66 @@ test('worktree nối node_modules từ dự án và không commit nó', async ()
   }
 });
 
+test('worktree chép file gitignore (worktree_copies) và linkedDirs trả đích thật của thư mục nối', async () => {
+  const root = tmpDir();
+  try {
+    const { project } = makeProject(root);
+    fs.writeFileSync(path.join(project, '.gitignore'), '/AGENTS.md\n/.env\n/node_modules\n');
+    git(project, 'add', '-A');
+    git(project, 'commit', '-q', '-m', 'ignore');
+    fs.writeFileSync(path.join(project, 'AGENTS.md'), '# A\n');
+    fs.writeFileSync(path.join(project, '.env'), 'S=1\n');
+    fs.mkdirSync(path.join(project, 'docs', 'rieng'), { recursive: true });
+    fs.writeFileSync(path.join(project, 'docs', 'rieng', 'ghi-chu.md'), 'x\n');
+    fs.mkdirSync(path.join(project, 'node_modules', 'goi'), { recursive: true });
+    fs.writeFileSync(path.join(project, 'node_modules', 'goi', 'index.js'), '1\n');
+
+    const wt = await createWorktree({
+      projectRoot: project, worktreesDir: path.join(root, 'wts'), member: 'An', taskId: 1,
+      links: ['node_modules'], copies: ['AGENTS.md', '.env', 'docs/rieng', '../ngoai.txt', '.git/config', 'khong-co.md', 'README.md'],
+    });
+    assert.deepEqual(wt.copied, ['AGENTS.md', 'docs/rieng'], 'chép file và thư mục có thật; bỏ .env, .git, đường dẫn ra ngoài, file không có, file đã có sẵn trong worktree');
+    assert.equal(fs.readFileSync(path.join(wt.dir, 'AGENTS.md'), 'utf8'), '# A\n');
+    assert.equal(fs.readFileSync(path.join(wt.dir, 'docs', 'rieng', 'ghi-chu.md'), 'utf8'), 'x\n');
+    assert.ok(!fs.existsSync(path.join(wt.dir, '.env')));
+
+    const linked = linkedDirs({ worktree: wt.dir, names: ['node_modules', 'khong-co', 'docs', '../thoat'] });
+    assert.deepEqual(linked.map((l) => l.name), ['node_modules'], 'chỉ liên kết thật; thư mục thường (docs) hay thiếu thì không');
+    assert.equal(linked[0].real, fs.realpathSync.native(path.join(project, 'node_modules')));
+
+    // File đã chép không bị commit: AGENTS.md đã gitignore; docs/rieng thì được loại trừ rõ.
+    fs.writeFileSync(path.join(wt.dir, 'moi.txt'), 'x\n');
+    const { changedFiles } = await commitWorktree({ dir: wt.dir, message: 'thử', exclude: ['node_modules', 'AGENTS.md', 'docs/rieng'] });
+    assert.deepEqual(changedFiles, ['moi.txt']);
+    assert.deepEqual(git(wt.dir, 'ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort(), ['.gitignore', 'README.md', 'moi.txt']);
+    assert.deepEqual(copyFiles({ projectRoot: project, worktree: wt.dir, names: ['AGENTS.md'] }), [], 'đã có thì không chép đè');
+    fs.rmSync(path.join(wt.dir, 'node_modules'));
+  } finally {
+    removeDir(root);
+  }
+});
+
+test('commitWorktree vẫn commit được khi node_modules đã nằm trong .gitignore của dự án (như web96)', async () => {
+  const root = tmpDir();
+  try {
+    const { project } = makeProject(root);
+    fs.writeFileSync(path.join(project, '.gitignore'), '/node_modules\n');
+    git(project, 'add', '-A');
+    git(project, 'commit', '-q', '-m', 'ignore node_modules');
+    fs.mkdirSync(path.join(project, 'node_modules', 'goi'), { recursive: true });
+    fs.writeFileSync(path.join(project, 'node_modules', 'goi', 'index.js'), 'module.exports = 1;\n');
+    const wt = await createWorktree({ projectRoot: project, worktreesDir: path.join(root, 'wts'), member: 'An', taskId: 1, links: ['node_modules'] });
+    fs.writeFileSync(path.join(wt.dir, 'moi.txt'), 'x\n');
+    const { changedFiles, commit } = await commitWorktree({ dir: wt.dir, message: 'thử', exclude: ['node_modules'] });
+    assert.deepEqual(changedFiles, ['moi.txt']);
+    assert.ok(commit, 'phải commit được, không để file nằm lại trong index');
+    assert.equal(git(wt.dir, 'status', '--porcelain').trim(), '');
+    fs.rmSync(path.join(wt.dir, 'node_modules'));
+  } finally {
+    removeDir(root);
+  }
+});
+
 test('cơ sở dữ liệu cũ (giai đoạn 1) được nâng cấp thêm các cột mới', () => {
   const root = tmpDir();
   try {
@@ -397,4 +461,39 @@ test('cơ sở dữ liệu cũ (giai đoạn 1) được nâng cấp thêm các 
   } finally {
     removeDir(root);
   }
+});
+
+test('đề bài có bản đồ file: Trưởng nhóm thấy thư mục của team, nhân viên thấy phạm vi việc con; lời nhắc bắt chia việc nhỏ kèm ngân sách lượt', async () => {
+  const ctx = await boot({ FAKE_PLAN: plan2(), FAKE_UNIQUE: '1', FAKE_REVIEW: 'approve' });
+  try {
+    fs.mkdirSync(path.join(ctx.project, 'src', 'a'), { recursive: true });
+    fs.writeFileSync(path.join(ctx.project, 'src', 'a', 'cu.js'), '1\n');
+    fs.writeFileSync(path.join(ctx.project, 'src', 'khac.js'), '1\n');
+    git(ctx.project, 'add', '-A');
+    git(ctx.project, 'commit', '-q', '-m', 'có file');
+    const job = await newJob(ctx);
+    await waitFor(() => ['done', 'attention', 'failed'].includes(ctx.store.getJob(job.id).status), { timeout: 40000, label: 'việc lớn xong' });
+    const calls = ctx.calls().filter((c) => !c.isTriage);
+    const plan = calls.find((c) => /Bản đồ file thư mục của team/.test(c.prompt));
+    assert.ok(plan, 'lượt lập kế hoạch có bản đồ file');
+    assert.match(plan.prompt, /- src\/a\/cu\.js\n- src\/khac\.js/);
+    const an = calls.find((c) => /Việc của An/.test(c.prompt) && /Bản đồ file trong phạm vi của bạn/.test(c.prompt));
+    assert.ok(an, 'đề bài của nhân viên có bản đồ file theo phạm vi việc con');
+    assert.match(an.prompt, /- src\/a\/cu\.js/);
+    assert.doesNotMatch(an.prompt, /src\/khac\.js/, 'chỉ liệt kê trong phạm vi việc con (src/a), không cả thư mục team');
+    const binh = calls.find((c) => /Việc của Bình/.test(c.prompt));
+    assert.match(binh.prompt, /- src\/b: chưa có/, 'phạm vi chưa tồn tại thì nói rõ là sẽ tạo');
+    const resumed = calls.filter((c) => c.resumed);
+    assert.ok(resumed.every((c) => !/Bản đồ file/.test(c.prompt)), 'làm tiếp cùng phiên thì không gửi lại bản đồ');
+  } finally {
+    await ctx.cleanup();
+  }
+
+  const teams = loadTeams({ teamsDir: path.join(REPO, 'teams') });
+  const lead = findMember(teams, 'Minh');
+  const system = buildLeadSystemPrompt({ member: lead.member, team: lead.team, role: lead.role, project: null, kind: 'plan' });
+  assert.match(system, /Việc con phải NHỎ: mỗi việc tối đa khoảng 3 file/);
+  assert.match(system, /khoảng 60 lượt cho một việc/, 'ngân sách lượt lấy từ max_turns của vai trò nhân viên');
+  assert.match(system, new RegExp(`phạm vi quá ${MAX_SCOPE_ENTRIES} mục sẽ bị từ chối`));
+  assert.match(system, /giao các phần đó cho CÙNG một người/);
 });

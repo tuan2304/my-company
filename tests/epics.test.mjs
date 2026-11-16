@@ -66,7 +66,7 @@ test('đường đi đầy đủ: Giám đốc lập kế hoạch + hợp đồn
     assert.deepEqual(JSON.parse(qa.depends_on), [api.id, ui.id]);
     assert.equal(ctx.store.jobTasks(api.id).length, 0, 'chưa duyệt thì Trưởng nhóm của team chưa chạy');
     assert.equal(ctx.calls().length, 1, 'mới chỉ có lượt lập kế hoạch của Giám đốc');
-    assert.throws(() => ctx.runner.epics.approveResult(epic.id), /chờ duyệt kết quả/);
+    await assert.rejects(ctx.runner.epics.approveResult(epic.id), /chờ duyệt kết quả/);
 
     // 2. Chủ duyệt kế hoạch: hai team không phụ thuộc chạy, team Chất lượng chờ.
     await ctx.runner.epics.approvePlan(epic.id);
@@ -104,7 +104,7 @@ test('đường đi đầy đủ: Giám đốc lập kế hoạch + hợp đồn
     assert.match(reviewed.summary, /Việc #\d+ \(backend\).*done/);
 
     // 5. Chủ duyệt kết quả thì hoàn thành.
-    ctx.runner.epics.approveResult(epic.id);
+    await ctx.runner.epics.approveResult(epic.id);
     assert.equal(ctx.store.getEpic(epic.id).status, 'done');
 
     // Model: Giám đốc lập kế hoạch bằng opus, kiểm tra bằng sonnet; Trưởng nhóm Backend opus, Frontend sonnet.
@@ -204,9 +204,10 @@ test('một team thất bại: việc phụ thuộc bị hủy dây chuyền, y�
     const done = await epicIn(ctx, epic.id, ['attention', 'failed', 'awaiting_result']);
     assert.equal(done.status, 'attention');
     const jobs = ctx.store.epicJobs(epic.id);
-    // Trưởng nhóm trả bài mọi lần nên Backend và Frontend đều không đạt; việc test phụ thuộc vào cả hai nên bị hủy.
-    assert.deepEqual(jobs.map((j) => j.status), ['failed', 'failed', 'failed']);
-    assert.match(jobs[2].error, /mà việc này phụ thuộc không hoàn thành/);
+    // Trưởng nhóm trả bài mọi lần nên Backend và Frontend đều không đạt; việc test phụ thuộc vào cả hai thì KHÔNG bị đánh lỗi dây chuyền
+    // mà chờ chủ quyết định (chạy trên phần đã có, hay hủy).
+    assert.deepEqual(jobs.map((j) => j.status), ['failed', 'failed', 'blocked']);
+    assert.match(jobs[2].error, /mà việc này phụ thuộc đã kết thúc ở "failed"/);
     assert.equal(ctx.store.jobTasks(jobs[2].id).length, 0, 'việc phụ thuộc không bao giờ được bắt đầu');
     assert.match(done.error, /3 việc của team chưa đạt/);
     assert.equal(ctx.store.epicTasks(epic.id).filter((t) => t.kind === 'dreview').length, 0, 'chưa đạt thì không tới bước Giám đốc kiểm tra');
@@ -404,5 +405,36 @@ test('cơ sở dữ liệu giai đoạn 2 được nâng cấp thêm cột cho j
     store.close();
   } finally {
     removeDir(root);
+  }
+});
+
+test('duyệt kết quả bị chặn khi nhánh gộp của yêu cầu không khác mã gốc (kết quả rỗng), vẫn "không duyệt" được', async () => {
+  const ctx = await boot();
+  try {
+    const base = git(ctx.project, 'rev-parse', 'HEAD');
+    const epic = ctx.store.createEpic({ title: 'E', prompt: 'p', director: 'Hòa', baseCommit: base });
+    ctx.store.updateEpic(epic.id, { status: 'awaiting_result', verdict: 'accept' });
+    await assert.rejects(ctx.runner.epics.approveResult(epic.id), /chưa có nhánh gộp nào/);
+
+    git(ctx.project, 'branch', 'company/epic-rong', base); // nhánh gộp trùng mã gốc: không có gì để nhận
+    ctx.store.updateEpic(epic.id, { merge_branch: 'company/epic-rong' });
+    await assert.rejects(ctx.runner.epics.approveResult(epic.id), /không có thay đổi nào so với mã gốc/);
+    assert.equal(ctx.store.getEpic(epic.id).status, 'awaiting_result', 'chặn thì yêu cầu vẫn chờ bạn quyết');
+
+    git(ctx.project, 'checkout', '-q', '-b', 'company/epic-co', base);
+    fs.writeFileSync(path.join(ctx.project, 'ket-qua.txt'), 'x\n');
+    git(ctx.project, 'add', '-A');
+    git(ctx.project, 'commit', '-q', '-m', 'có kết quả');
+    git(ctx.project, 'checkout', '-q', 'main');
+    ctx.store.updateEpic(epic.id, { merge_branch: 'company/epic-co' });
+    await ctx.runner.epics.approveResult(epic.id);
+    assert.equal(ctx.store.getEpic(epic.id).status, 'done');
+
+    const other = ctx.store.createEpic({ title: 'E2', prompt: 'p', director: 'Hòa', baseCommit: base });
+    ctx.store.updateEpic(other.id, { status: 'awaiting_result', merge_branch: 'company/epic-rong' });
+    ctx.runner.epics.rejectResult(other.id, 'Không có gì để nhận.');
+    assert.equal(ctx.store.getEpic(other.id).status, 'rejected');
+  } finally {
+    await ctx.cleanup();
   }
 });

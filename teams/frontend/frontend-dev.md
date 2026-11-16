@@ -3,8 +3,8 @@ title: Lập trình viên Frontend
 model: sonnet
 effort: medium
 tools: [Read, Grep, Glob, Edit, Write, Bash]
-max_turns: 30
-timeout_minutes: 20
+max_turns: 60
+timeout_minutes: 40
 # Skill luôn nạp (chỉ nạp khi đã được duyệt vào skills.lock). Tối đa 5.
 # `ui-ux-pro-max` đã được duyệt và nằm trong thư viện nhưng KHÔNG nạp mặc định: nó dựa vào script Python
 # (python "${CLAUDE_PLUGIN_ROOT}/.claude/skills/ui-ux-pro-max/scripts/search.py") mà nhân viên chưa được phép chạy.

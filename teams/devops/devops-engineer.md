@@ -3,8 +3,8 @@ title: Kỹ sư DevOps
 model: sonnet
 effort: medium
 tools: [Read, Grep, Glob, Edit, Write, Bash]
-max_turns: 30
-timeout_minutes: 20
+max_turns: 60
+timeout_minutes: 40
 skills:
   - systematic-debugging
   - verification-before-completion

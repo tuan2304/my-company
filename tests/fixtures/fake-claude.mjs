@@ -2,6 +2,7 @@
 // Kịch bản chọn bằng biến môi trường FAKE_CLAUDE_SCENARIO; mọi lần chạy ghi lại
 // tham số và môi trường vào FAKE_CLAUDE_LOG (mỗi dòng một JSON).
 import fs from 'node:fs';
+import path from 'node:path';
 
 const args = process.argv.slice(2);
 if (args.includes('--version')) {
@@ -18,12 +19,21 @@ for await (const chunk of process.stdin) prompt += chunk;
 // Lần gọi đánh giá độ khó (triage): có --system-prompt và đầu ra JSON một khối.
 const isTriage = args.includes('--system-prompt');
 
+// Gói skill chỉ tồn tại lúc tiến trình chạy (runner dọn nó khi xong việc), nên ghi lại tên skill ngay bây giờ.
+const pluginFlag = args.indexOf('--plugin-dir');
+let pluginSkills = null;
+try {
+  if (pluginFlag >= 0) pluginSkills = fs.readdirSync(path.join(args[pluginFlag + 1], 'skills')).sort();
+} catch {
+  /* không có gói */
+}
+
 if (process.env.FAKE_CLAUDE_LOG) {
   fs.appendFileSync(
     process.env.FAKE_CLAUDE_LOG,
     `${JSON.stringify({
-      args, prompt, cwd: process.cwd(), resumed, isTriage,
-      guard: { root: process.env.COMPANY_GUARD_ROOT, allow: process.env.COMPANY_GUARD_ALLOW, mode: process.env.COMPANY_GUARD_MODE },
+      args, prompt, cwd: process.cwd(), resumed, isTriage, pluginSkills,
+      guard: { root: process.env.COMPANY_GUARD_ROOT, allow: process.env.COMPANY_GUARD_ALLOW, mode: process.env.COMPANY_GUARD_MODE, links: process.env.COMPANY_GUARD_LINKS },
       hasApiKey: Object.keys(process.env).some((k) => k.toUpperCase() === 'ANTHROPIC_API_KEY'),
       hasNestedVar: Object.keys(process.env).some((k) => k.toUpperCase() === 'CLAUDECODE'),
     })}\n`,
@@ -251,6 +261,11 @@ switch (scenario) {
     doWork();
     result({ subtype: 'error_max_turns', is_error: true, result: '', terminal_reason: 'max_turns' });
     process.exitCode = 1;
+    break;
+  case 'claim_only':
+    // Nói đã sửa file nhưng không ghi gì (giả lập mất commit / ghi nhầm chỗ).
+    out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Xong rồi.' }] } });
+    result({ subtype: 'success', is_error: false, result: 'Đã làm: tạo hello.txt\nFile thay đổi: hello.txt, src/lib/moi.ts\nCách kiểm tra: mở file\nĐiều còn dang dở: không' });
     break;
   case 'crash':
     process.stderr.write('lỗi giả lập\n');

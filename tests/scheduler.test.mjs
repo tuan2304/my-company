@@ -273,9 +273,11 @@ test('API: tạo lịch (tắt sẵn), bật, chạy ngay, không chồng, tắt
     assert.deepEqual(created.data.schedule.days, [1, 2, 3, 4, 5]);
     assert.equal(created.data.schedule.next_run_at, null, 'tắt thì không có lần chạy kế tiếp');
 
+    // Chạy test trong cửa sổ chạy bù (08:30–11:30 ngày thường) thì next_run_at là "bây giờ" của máy chủ, nên so với mốc lấy TRƯỚC khi gọi.
+    const before = Date.now();
     const on = await ctx.call('POST', `/api/schedules/${id}/enable`);
     assert.equal(on.data.schedule.enabled, true);
-    assert.ok(on.data.schedule.next_run_at > Date.now() - 1);
+    assert.ok(on.data.schedule.next_run_at >= before, `next_run_at=${on.data.schedule.next_run_at} < ${before}`);
 
     const now = await ctx.call('POST', `/api/schedules/${id}/run-now`);
     assert.equal(now.status, 200, JSON.stringify(now.data));

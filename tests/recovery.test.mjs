@@ -100,6 +100,7 @@ test('việc lỗi được ghi mã lỗi và đủ dữ kiện: có phần đã
     assert.equal(info.diagnosis.recoverable, true);
     assert.match(info.work.stat, /hello\.txt/);
     assert.match(info.work.patch, /xin chào/);
+    assert.deepEqual(info.work.files, ['hello.txt'], 'màn hình lỗi biết còn bài dở gồm file nào');
     assert.ok(info.evidence.some((e) => e.kind === 'error'));
     assert.equal(info.diagnosis.options.length, 5);
   } finally {
@@ -123,7 +124,7 @@ test('Làm tiếp: cùng phiên (--resume), có lời dặn trong lời nhắc, 
   const ctx = await setup('maxturns');
   try {
     const task = await ctx.failed();
-    const baseTurns = Number(flag(ctx.calls().at(-1), '--max-turns'));
+    const baseTurns = Number(flag(ctx.calls()[0], '--max-turns')); // số lượt gốc (lần chạy đầu, trước khi hệ thống tự cho làm tiếp)
     process.env.FAKE_CLAUDE_SCENARIO = 'success';
     await recoverTask(ctx.runner, task.id, { action: 'continue', guidance: 'Chỉ sửa hello.txt thôi.' });
 
@@ -138,7 +139,7 @@ test('Làm tiếp: cùng phiên (--resume), có lời dặn trong lời nhắc, 
     assert.equal(call.resumed, true);
     assert.match(call.prompt, /Lời dặn của chủ công ty/);
     assert.match(call.prompt, /Chỉ sửa hello\.txt thôi\./);
-    assert.equal(Number(flag(call, '--max-turns')), Math.ceil(baseTurns * 1.5), 'được thêm một nửa số lượt');
+    assert.equal(Number(flag(call, '--max-turns')), baseTurns * 2, 'mỗi lần làm tiếp (hệ thống tự + chủ chọn) được thêm một nửa số lượt gốc');
     assert.ok(ctx.store.listEvents(task.id).some((e) => e.kind === 'recover' && /Làm tiếp/.test(e.summary)));
   } finally {
     await ctx.cleanup();
@@ -418,13 +419,15 @@ test('lỗi lặp lại sau lần tự thử: dừng ở "lỗi" (không thử v
   }
 });
 
-test('chỉ tự thử lại khi tiến trình tự thoát: hết số lượt thì không tự thử (tốn hạn mức vô ích)', async () => {
+test('hết số lượt thì không "tự thử lại" phiên mới (tốn hạn mức vô ích) mà "tự làm tiếp" cùng phiên đúng một lần', async () => {
   const ctx = await setup('maxturns');
   try {
     const task = await ctx.failed();
     assert.equal(task.auto_retries, 0);
-    assert.equal(task.attempts, 1);
-    assert.equal(ctx.calls().length, 1);
+    assert.equal(task.auto_continues, 1);
+    assert.equal(task.attempts, 2);
+    assert.equal(ctx.calls().length, 2);
+    assert.equal(ctx.calls()[1].resumed, true, 'lần hai nối phiên cũ');
   } finally {
     await ctx.cleanup();
   }

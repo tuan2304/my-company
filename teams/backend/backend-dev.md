@@ -3,8 +3,8 @@ title: Lập trình viên Backend
 model: sonnet
 effort: medium
 tools: [Read, Grep, Glob, Edit, Write, Bash]
-max_turns: 30
-timeout_minutes: 20
+max_turns: 60
+timeout_minutes: 40
 # Skill luôn nạp (chỉ nạp khi đã duyệt vào skills.lock, xem "npm run skills add"). Tối đa 5.
 skills:
   - test-driven-development

@@ -41,7 +41,7 @@ export function collectPaths(args) {
   return found;
 }
 
-/** Trả về { allowed, reason }. `config` = { root, allow, mode }. */
+/** Trả về { allowed, reason }. `config` = { root, allow, mode, links } (links: thư mục nối từ dự án, chỉ đọc). */
 export function decideAgy({ toolName, args, config }) {
   const name = String(toolName ?? '');
   if (!name) return { allowed: false, reason: 'Sự kiện công cụ thiếu tên.' };
@@ -66,6 +66,7 @@ export function decideAgy({ toolName, args, config }) {
       root,
       allow: config.allow ?? [],
       mode: config.mode ?? 'worker',
+      links: config.links ?? [],
     });
     if (!verdict.allowed) return verdict;
   }

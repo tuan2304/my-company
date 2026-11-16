@@ -3,8 +3,8 @@ title: Nhà thiết kế UI/UX
 model: sonnet
 effort: medium
 tools: [Read, Grep, Glob, Edit, Write]
-max_turns: 30
-timeout_minutes: 20
+max_turns: 60
+timeout_minutes: 40
 skills:
   - ui-ux-pro-max
   - impeccable

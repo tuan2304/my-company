@@ -60,6 +60,8 @@ export function loadProject(localDir) {
     preview: parsePreview(data.preview),
     // Thư mục của dự án được nối (junction) vào mỗi worktree để chạy test mà không phải cài lại, ví dụ node_modules.
     worktreeLinks: asList(data.worktree_links ?? ['node_modules']),
+    // File/thư mục được CHÉP vào mỗi worktree (không nối, không commit): cho file bị gitignore mà nhân viên cần đọc, như AGENTS.md.
+    worktreeCopies: asList(data.worktree_copies),
     // Lỗi/test đang đỏ SẴN từ trước (không do nhân viên gây ra): báo cho agent khỏi tốn lượt sửa nhầm.
     knownFailures: asList(data.known_failures),
     conventions: String(data.conventions ?? '').trim(),
@@ -135,12 +137,16 @@ export function detectStack(projectRoot) {
 
 const yamlKey = (key) => (/^[A-Za-z0-9_-]+$/.test(key) ? key : JSON.stringify(key));
 
-export function renderProjectDraft({ name, stack, commands, skipped = [] }) {
+export function renderProjectDraft({ name, stack, commands, skipped = [], root = null }) {
   const lines = [
     '---',
     '# HỒ SƠ DỰ ÁN (bản nháp do `init` tạo). Ví dụ đầy đủ có chú thích: docs/vi-du/project.web96photobooth.md trong thư mục công cụ.',
     `name: ${name}`,
     `stack: [${stack.join(', ')}]`,
+    '',
+    '# Gốc dự án. Không khai thì mặc định là thư mục cha của thư mục công cụ (công cụ nằm ở <dự án>/.my-company).',
+    '# Công cụ nằm NGOÀI dự án thì phải khai, nếu không "npm start" sẽ trỏ nhầm (ví dụ thành D:\\) và mọi việc chết ở lượt 0.',
+    ...(root ? [`root: ${JSON.stringify(root)}`] : ['# root: D:\\du-an']),
     '',
     '# Thư mục mỗi team ĐƯỢC SỬA, tính từ gốc dự án. Khớp theo tiền tố: "src/lib" gồm cả src/lib/a.ts; ghi tên một file cũng được.',
     '# Thêm "!" để loại trừ: [src/app, "!src/app/api"] = mọi thứ trong src/app trừ src/app/api (nhớ để trong ngoặc kép).',
@@ -183,7 +189,11 @@ export function renderProjectDraft({ name, stack, commands, skipped = [] }) {
     '',
     '# Thư mục của dự án được nối vào mỗi nhánh làm việc (worktree) để chạy test không phải cài lại. Mặc định chỉ node_modules.',
     '# File bị gitignore (như .env.local, thư mục sinh ra lúc postinstall) KHÔNG có trong worktree; cần thì thêm vào đây.',
+    '# Trong thư mục nối, nhân viên chỉ ĐỌC được (xem tài liệu thư viện), không sửa được.',
     '# worktree_links: [node_modules]',
+    '',
+    '# File bị gitignore mà nhân viên cần ĐỌC (ví dụ AGENTS.md): được CHÉP vào mỗi worktree, không commit. Không chép .env.',
+    '# worktree_copies: [AGENTS.md]',
     '',
     '# Không bắt buộc: cách chạy bản xem thử để chụp ảnh khi thi đấu skill ({port} được thay bằng một cổng trống).',
     '# preview:',

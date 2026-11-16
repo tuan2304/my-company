@@ -190,14 +190,14 @@ test('prepareAgyRun (worker): đặt hook, guard + config, skill và AGENTS.md v
   try {
     const wt = path.join(root, 'wt');
     fs.mkdirSync(wt);
-    const run = prepareAgyRun({ cwd: wt, runDir: path.join(root, 'run'), readonly: false, root: wt, allow: ['src'], commands: ['npm test', 'git status'], systemText: 'Bạn là An.', skillsDir: skillPack(root), prompt: 'Làm việc X' });
+    const run = prepareAgyRun({ cwd: wt, runDir: path.join(root, 'run'), readonly: false, root: wt, allow: ['src'], links: ['node_modules'], commands: ['npm test', 'git status'], systemText: 'Bạn là An.', skillsDir: skillPack(root), prompt: 'Làm việc X' });
     assert.equal(run.cwd, wt);
     assert.deepEqual(run.args, ['-p', 'Làm việc X']);
 
     const hooks = JSON.parse(fs.readFileSync(path.join(wt, '.agents', 'hooks.json'), 'utf8'));
     assert.equal(hooks.hooks.PreToolUse[0].hooks[0].command, 'node company-guard/agy-guard.mjs', 'không dấu ngoặc kép (agy làm hỏng chúng trên Windows)');
     const config = JSON.parse(fs.readFileSync(path.join(wt, '.agents', 'company-guard', 'config.json'), 'utf8'));
-    assert.deepEqual(config, { root: wt, allow: ['src'], mode: 'worker' });
+    assert.deepEqual(config, { root: wt, allow: ['src'], links: ['node_modules'], mode: 'worker' });
     assert.ok(fs.existsSync(path.join(wt, '.agents', 'company-guard', 'agy-guard.mjs')));
     assert.ok(fs.existsSync(path.join(wt, '.agents', 'company-guard', 'path-guard.mjs')));
     assert.ok(fs.existsSync(path.join(wt, '.agents', 'skills', 'ponytail', 'SKILL.md')));
@@ -383,7 +383,7 @@ test('Runner + agy: việc thành công có nhánh, commit CHỈ file của nhâ
     assert.equal(flag('--model'), 'gemini-3.8-flash-high', 'bậc sonnet của vai trò thành model Gemini');
     assert.ok(!call.args.includes('--effort'), 'model Gemini đã có mức trong tên nên không truyền --effort');
     assert.ok(call.hooks.includes('company-guard/agy-guard.mjs'));
-    assert.deepEqual(JSON.parse(call.guardConfig), { root: task.worktree, allow: ['src'], mode: 'worker' });
+    assert.deepEqual(JSON.parse(call.guardConfig), { root: task.worktree, allow: ['src'], links: [], mode: 'worker' });
     assert.ok(call.skills.includes('ponytail'), `skill đã duyệt phải được chép vào .agents/skills (được ${call.skills})`);
     assert.match(call.agentsMd, /Bạn là An/);
     assert.match(call.agentsMd, /## Skill của bạn/);
@@ -469,13 +469,18 @@ test('Runner + agy: model sai là lỗi thường (không phải hết hạn m�
 test('Runner + agy: không có --max-turns nên runner tự đếm lượt và dừng khi vượt, coi như hết số lượt (đúng luồng nâng bậc/hết lượt của Claude)', async () => {
   const ctx = await setup({}, { FAKE_AGY_SCENARIO: 'many_steps' });
   try {
-    const { id } = await ctx.runner.submit({ ...job, level: 'hard' }); // người dùng chọn mức: không tự nâng bậc, thất bại thẳng để dễ kiểm
+    // Bài này cần giới hạn lượt NHỎ HƠN 45 bước của kịch bản giả, kể cả sau khi hệ thống tự cho làm tiếp một lần (x1.5 = 30); không phụ thuộc số lượt thật của vai trò.
     const role = findMember(ctx.teams, 'An').role;
-    const task = await waitFor(() => ctx.store.getTask(id).status === 'failed' && ctx.store.getTask(id), { timeout: 20000, label: 'thất bại vì hết lượt' });
+    role.max_turns = 20;
+    const { id } = await ctx.runner.submit({ ...job, level: 'hard' }); // người dùng chọn mức: không tự nâng bậc, thất bại thẳng để dễ kiểm
+    const task = await waitFor(() => ctx.store.getTask(id).status === 'failed' && ctx.store.getTask(id), { timeout: 30000, label: 'thất bại vì hết lượt' });
     assert.equal(task.failure_code, 'max_turns');
     assert.match(task.error, /error_max_turns/);
+    assert.equal(task.auto_continues, 1, 'hết lượt thì hệ thống tự cho làm tiếp một lần (cùng phiên agy) rồi mới chịu lỗi');
+    assert.equal(ctx.calls().length, 2);
+    // Hai lần chạy: lần 1 dừng sau 21 bước, lần 2 (30 lượt) dừng sau 31 bước; không lần nào chạy hết 45 bước.
     const tools = ctx.store.listEvents(id).filter((e) => e.kind === 'tool').length;
-    assert.ok(tools > role.max_turns && tools < 45, `dừng ngay sau khi vượt ${role.max_turns} lượt, không để chạy hết 45 bước (được ${tools})`);
+    assert.ok(tools > role.max_turns && tools < 2 * 45, `dừng ngay sau khi vượt số lượt, không để chạy hết 45 bước (được ${tools})`);
   } finally {
     await ctx.cleanup();
   }

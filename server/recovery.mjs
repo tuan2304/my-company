@@ -120,7 +120,9 @@ export async function inspectFailure({ store, projectRoot, id }) {
   let work = null;
   if (facts.hasWork) {
     const diff = await branchDiff({ projectRoot, baseCommit: task.base_commit, branch: task.branch, maxChars: 20_000 });
-    work = { branch: task.branch, stat: diff.stat, patch: maskSecrets(diff.patch), truncated: diff.truncated };
+    const names = (await git(projectRoot, ['diff', '--name-only', `${task.base_commit}..${task.branch}`], { allowFail: true })) ?? '';
+    const files = names.split('\n').map((s) => s.trim()).filter(Boolean);
+    work = { branch: task.branch, stat: diff.stat, patch: maskSecrets(diff.patch), truncated: diff.truncated, files };
   }
   return { diagnosis, evidence, work };
 }

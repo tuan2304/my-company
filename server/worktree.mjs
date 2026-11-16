@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { SCRATCH_DIR } from './path-guard.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -108,7 +109,7 @@ function unlinkLinks(dir) {
 }
 
 /** Mỗi việc một worktree và một nhánh riêng, đặt bên ngoài dự án (mục 3.7). */
-export async function createWorktree({ projectRoot, worktreesDir, member, taskId, links = [], baseCommit: explicitBase }) {
+export async function createWorktree({ projectRoot, worktreesDir, member, taskId, links = [], copies = [], baseCommit: explicitBase }) {
   const head = await checkRepo(projectRoot);
   const baseCommit = explicitBase ?? head;
   fs.mkdirSync(worktreesDir, { recursive: true });
@@ -120,8 +121,51 @@ export async function createWorktree({ projectRoot, worktreesDir, member, taskId
   const branch = `company/${slug}`;
   const dir = path.join(worktreesDir, slug);
   await git(projectRoot, ['worktree', 'add', '-b', branch, dir, baseCommit]);
+  ensureScratchDir(dir);
   const linked = linkDirs({ projectRoot, worktree: dir, names: links });
-  return { dir, branch, baseCommit, linked };
+  const copied = copyFiles({ projectRoot, worktree: dir, names: copies });
+  return { dir, branch, baseCommit, linked, copied };
+}
+
+/**
+ * Thư mục nối (worktree_links) hiện có trong worktree và đích thật của chúng, để khai cho hook chặn file (chỉ đọc) và cho
+ * Claude Code (--add-dir). Tính lại mỗi lần chạy, vì khi làm tiếp một việc thì worktree đã có sẵn.
+ */
+export function linkedDirs({ worktree, names }) {
+  const out = [];
+  for (const name of names ?? []) {
+    const clean = String(name).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    if (!clean || clean.split('/').includes('..')) continue;
+    const full = path.join(worktree, clean);
+    try {
+      if (!fs.lstatSync(full).isSymbolicLink()) continue;
+      out.push({ name: clean, real: fs.realpathSync.native(full) });
+    } catch {
+      /* chưa có hoặc không đọc được: bỏ qua */
+    }
+  }
+  return out;
+}
+
+/**
+ * Chép file/thư mục của dự án vào worktree (worktree_copies): dành cho file bị gitignore nhưng nhân viên cần đọc
+ * (ví dụ AGENTS.md). Không chép file bí mật (.env*), .git, hay đường dẫn đi ra ngoài; không đè file đã có trong worktree.
+ */
+export function copyFiles({ projectRoot, worktree, names }) {
+  const copied = [];
+  for (const name of names ?? []) {
+    const clean = String(name).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const parts = clean.split('/');
+    if (!clean || parts.includes('..') || parts.includes('.git')) continue;
+    if (parts.some((p) => /^\.env(\..+)?$/i.test(p))) continue;
+    const src = path.join(projectRoot, clean);
+    const dst = path.join(worktree, clean);
+    if (!fs.existsSync(src) || fs.existsSync(dst)) continue;
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.cpSync(src, dst, { recursive: true, dereference: true });
+    copied.push(clean);
+  }
+  return copied;
 }
 
 export const GIT_IDENTITY = ['-c', 'user.name=Công ty AI', '-c', 'user.email=my-company@localhost', '-c', 'commit.gpgsign=false'];
@@ -206,13 +250,33 @@ export function linkDirs({ projectRoot, worktree, names }) {
 
 const excludeSpecs = (names) => (names ?? []).map((n) => `:(exclude)${n}`);
 
-/** Commit mọi thay đổi trong worktree lên nhánh của việc (không push). Trả về danh sách file đổi. */
+/**
+ * Thư mục nháp của nhân viên (xem path-guard.mjs): tạo sẵn kèm .gitignore tự loại trừ, nên git không bao giờ thấy nội dung
+ * trong đó (commit, status, diff đều bỏ qua). Worktree cũ (làm tiếp) chưa có thì tạo thêm.
+ */
+export function ensureScratchDir(worktree) {
+  const dir = path.join(worktree, SCRATCH_DIR);
+  fs.mkdirSync(dir, { recursive: true });
+  const ignore = path.join(dir, '.gitignore');
+  if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, '*\n');
+  return dir;
+}
+
+/** Commit mọi thay đổi trong worktree lên nhánh của việc (không push). Trả về danh sách file đổi. Thư mục nháp luôn bị loại. */
 export async function commitWorktree({ dir, message, exclude = [] }) {
+  exclude = [...new Set([SCRATCH_DIR, ...exclude])];
   const specs = exclude.length ? ['--', '.', ...excludeSpecs(exclude)] : [];
   const status = await git(dir, ['status', '--porcelain=v1', '-z', '--untracked-files=all', ...specs], { raw: true });
   const changedFiles = parsePorcelainZ(status);
   if (changedFiles.length === 0) return { changedFiles: [], commit: null };
-  await git(dir, ['add', '-A', ...specs]);
+  // Mục đã nằm trong .gitignore thì không cần loại trừ nữa. Nếu vẫn truyền `:(exclude)` cho nó, `git add` gom file khác xong
+  // vẫn thoát mã 1 ("paths are ignored by one of your .gitignore files"): commit bị bỏ, công việc nằm lại trong index mà không ai hay.
+  const notIgnored = [];
+  for (const name of exclude) {
+    const checked = await gitResult(dir, ['check-ignore', '-q', '--', name]);
+    if (checked.code !== 0) notIgnored.push(name);
+  }
+  await git(dir, ['add', '-A', ...(notIgnored.length ? ['--', '.', ...excludeSpecs(notIgnored)] : [])]);
   await git(dir, [
     '-c', 'user.name=Công ty AI',
     '-c', 'user.email=my-company@localhost',

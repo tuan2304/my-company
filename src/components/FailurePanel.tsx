@@ -84,6 +84,9 @@ export default function FailurePanel({ task, epic, onSelectJob }: Props) {
   const wantsGuidance = Boolean(choice?.guidance);
   const isWork = !epic && (task?.kind ?? 'work') === 'work';
   const badJobs = d.badJobs ?? [];
+  // Phương án nên chọn (thường là "Làm tiếp") đứng đầu để bấm được ngay.
+  const options = [...d.options].sort((a, b) => Number(b.action === d.recommended) - Number(a.action === d.recommended));
+  const draftFiles = info.work?.files ?? [];
 
   return (
     <section className="failure" aria-label={heading}>
@@ -118,6 +121,12 @@ export default function FailurePanel({ task, epic, onSelectJob }: Props) {
         </details>
       )}
 
+      {draftFiles.length > 0 && (
+        <p className="draft-line">
+          <strong>Còn bài dở: {draftFiles.length} file</strong> trên nhánh <code>{info.work?.branch}</code>
+          {' '}({draftFiles.slice(0, 4).join(', ')}{draftFiles.length > 4 ? ', …' : ''}). Chọn <strong>Làm tiếp</strong> để nhân viên hoàn thành phần còn lại, không phải làm lại từ đầu.
+        </p>
+      )}
       {info.work ? (
         <details>
           <summary>Phần nhân viên đã làm (nhánh {info.work.branch})</summary>
@@ -146,11 +155,11 @@ export default function FailurePanel({ task, epic, onSelectJob }: Props) {
         <>
           <p><strong>Bạn muốn xử lý thế nào?</strong></p>
           <div className="options">
-            {d.options.map((o) => (
+            {options.map((o) => (
               <button
                 key={o.action}
                 type="button"
-                className={`${o.action === 'skip' ? 'secondary' : ''} ${choice?.action === o.action ? 'chosen' : ''}`}
+                className={`${o.action === 'skip' ? 'secondary' : ''} ${o.action === d.recommended ? 'recommended' : ''} ${choice?.action === o.action ? 'chosen' : ''}`}
                 disabled={busy}
                 title={o.hint}
                 onClick={() => setChoice(o)}

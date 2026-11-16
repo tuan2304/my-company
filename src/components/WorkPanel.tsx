@@ -147,7 +147,10 @@ export default function WorkPanel({ epics, jobs, tasks, needs, now, selected, se
                             {item.parent && <><span aria-hidden="true">·</span><span>thuộc {item.parent.kind === 'job' ? 'việc lớn' : 'yêu cầu'} #{item.parent.id}</span></>}
                           </span>
                           <span className="witem-status">
-                            {statusText(item)}
+                            <span>
+                              {statusText(item)}
+                              {item.note && <span className="witem-note"> · {item.note}</span>}
+                            </span>
                             <span className="witem-time">{formatAgo(item.at, now)}</span>
                           </span>
                         </button>

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ownerRequests } from '../src/office/status.ts';
-import { daySection, defaultTab, groupWork, splitByPhase, tabOf, taskPhase } from '../src/lib/work-groups.ts';
+import { daySection, defaultTab, draftNote, groupWork, splitByPhase, tabOf, taskPhase } from '../src/lib/work-groups.ts';
 
 const NOW = new Date(2026, 10, 11, 15, 0, 0).getTime();
 const HOUR = 3600_000;
@@ -125,4 +125,17 @@ test('việc con trong chi tiết chia theo giai đoạn, lỗi đứng đầu, 
     ['problem', [2]], ['active', [3, 4]], ['done', [1]], ['stopped', [5]],
   ]);
   assert.deepEqual(splitByPhase([], (t) => taskPhase(t.status)), []);
+});
+
+test('việc lỗi còn bài dở: thẻ ghi "còn bài dở, N file"; không có file hay không lỗi thì không ghi', () => {
+  assert.equal(draftNote({ status: 'failed', changed_files: '["a.ts","b.ts","c.ts"]' }), 'còn bài dở, 3 file');
+  assert.equal(draftNote({ status: 'failed', changed_files: '[]' }), undefined);
+  assert.equal(draftNote({ status: 'failed', changed_files: null }), undefined);
+  assert.equal(draftNote({ status: 'failed', changed_files: 'hỏng' }), undefined);
+  assert.equal(draftNote({ status: 'done', changed_files: '["a.ts"]' }), undefined);
+
+  const { groups } = build({ tasks: [task(1, 'failed', { changed_files: '["a.ts","b.ts"]' }), task(2, 'failed', { changed_files: '[]' })] });
+  const items = Object.fromEntries(groups.tabs.need.flatMap((s) => s.items).map((i) => [i.id, i]));
+  assert.equal(items[1]?.note, 'còn bài dở, 2 file');
+  assert.equal(items[2]?.note, undefined);
 });

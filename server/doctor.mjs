@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { hasPin } from './auth.mjs';
 import { getEngine } from './engines/index.mjs';
 import { findBillingEnv, sanitizedEnv } from './guard.mjs';
+import { findHostScanProblems } from './host-scan.mjs';
 import { loadProject } from './project.mjs';
 import { folderRules } from './path-guard.mjs';
 import { describeRoleSkills, verifyLibrary } from './skills.mjs';
@@ -31,7 +32,7 @@ export function checkProjectRoot(cfg) {
   const toolName = path.basename(cfg.toolDir);
   if (path.parse(root).root === root) {
     out.push(result('project-root', 'fail', `Gốc dự án đang là gốc ổ đĩa: ${root}`,
-      `Công cụ nằm ở ${cfg.toolDir} nên mặc định coi thư mục cha là dự án. Đặt COMPANY_PROJECT_ROOT=<thư mục dự án> hoặc chạy kèm --project <thư mục dự án>, hoặc clone công cụ vào trong dự án (thư mục .my-company).`));
+      `Công cụ nằm ở ${cfg.toolDir} nên mặc định coi thư mục cha là dự án. Ghi "root: <thư mục dự án>" vào phần đầu local/project.md (một lần), hoặc đặt COMPANY_PROJECT_ROOT=<thư mục dự án>, hoặc chạy kèm --project <thư mục dự án>, hoặc clone công cụ vào trong dự án (thư mục .my-company).`));
     return out;
   }
   if (!PROJECT_MARKERS.some((m) => fs.existsSync(path.join(root, m)))) {
@@ -39,9 +40,14 @@ export function checkProjectRoot(cfg) {
   }
   if (cfg.projectRootSource === 'parent' && toolName !== '.my-company') {
     out.push(result('project-root', 'warn', `Thư mục công cụ tên "${toolName}" (không phải ".my-company"), gốc dự án đang tự lấy là thư mục cha: ${root}`,
-      'README giả định công cụ nằm ở <dự án>/.my-company. Nếu thư mục cha không phải dự án bạn muốn, đặt COMPANY_PROJECT_ROOT hoặc dùng --project.'));
+      'README giả định công cụ nằm ở <dự án>/.my-company. Nếu thư mục cha không phải dự án bạn muốn, ghi "root: <thư mục dự án>" vào local/project.md, hoặc đặt COMPANY_PROJECT_ROOT, hoặc dùng --project.'));
   }
   return out;
+}
+
+/** Công cụ của dự án chủ (tsc, eslint, test) có quét nhầm thư mục my-company khi nó nằm lồng bên trong không. Chỉ đọc, không sửa. */
+export function checkHostScan(cfg) {
+  return findHostScanProblems(cfg.toolDir).map((p) => result('host-scan', 'warn', p.problem, p.fix));
 }
 
 /** Cấu hình folders: khóa lạ/cũ, team tài liệu chưa khai thư mục, team viết code để rỗng (= không giới hạn). */
@@ -121,6 +127,7 @@ export async function runDoctor(cfg) {
   );
 
   checks.push(...checkProjectRoot(cfg));
+  checks.push(...checkHostScan(cfg));
 
   try {
     await checkRepo(cfg.projectRoot);

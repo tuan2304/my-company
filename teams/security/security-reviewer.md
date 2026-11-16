@@ -3,8 +3,8 @@ title: Người rà soát bảo mật
 model: sonnet
 effort: high
 tools: [Read, Grep, Glob, Write, Bash]
-max_turns: 40
-timeout_minutes: 25
+max_turns: 60
+timeout_minutes: 40
 skills:
   - differential-review
   - sharp-edges

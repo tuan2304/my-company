@@ -2,13 +2,14 @@
 # ============================================================================
 # HỒ SƠ DỰ ÁN: web96photobooth_onl  (bản tối ưu, để chủ dự án tự chỉnh)
 # ----------------------------------------------------------------------------
-# QUAN TRỌNG: công cụ này nằm ở D:\my-company nên mặc định sẽ coi D:\ là dự án.
-# Phải trỏ đúng dự án trước khi chạy, bằng MỘT trong hai cách:
-#   - đặt biến môi trường COMPANY_PROJECT_ROOT=D:\web96photobooth_onl
-#   - hoặc thêm  --project D:\web96photobooth_onl  vào lệnh my-company
+# QUAN TRỌNG: công cụ này nằm ở D:\my-company nên nếu không khai gì sẽ coi D:\ là dự án
+# (mọi việc giao ra chết ngay ở lượt 0: "D:\ không phải là git repo").
+# Dòng root bên dưới chỉ đúng dự án, nên chỉ cần "npm start" là đủ. --project hoặc biến
+# COMPANY_PROJECT_ROOT (nếu có) được ưu tiên hơn dòng này.
 # Mọi đường dẫn trong "folders" bên dưới tính từ gốc dự án đó, không phải từ D:\my-company.
 # ============================================================================
 name: web96photobooth_onl
+root: D:\web96photobooth_onl
 stack: [Next.js, React, TypeScript, Supabase, Cloudflare Workers, Cloudflare R2, Node.js]
 
 # Thư mục mỗi team ĐƯỢC SỬA. Khóa là id team (tên thư mục trong teams/).
@@ -51,10 +52,13 @@ allowed_commands: [git status, git diff, npm run test:core, npm run test:admin, 
 #   pages: [/studio]
 #   wait_seconds: 90
 
-# Thư mục của dự án được nối vào mỗi worktree. Mặc định chỉ node_modules.
+# Thư mục của dự án được nối vào mỗi worktree. Mặc định chỉ node_modules. Trong đó nhân viên chỉ ĐỌC được (tài liệu Next ở node_modules/next/dist/docs).
 # CHƯA KIỂM CHỨNG: .env.local và public/vendor/mediapipe/wasm bị gitignore nên không có trong worktree,
 # có thể làm npm run build hoặc vài test hỏng. Nếu thấy vậy, thử thêm public/vendor vào đây.
 # worktree_links: [node_modules]
+
+# File bị gitignore mà nhân viên cần đọc: được CHÉP vào mỗi worktree, không commit. AGENTS.md của dự án nằm trong .gitignore nên phải chép.
+worktree_copies: [AGENTS.md]
 
 conventions: |
   Đọc AGENTS.md, PRODUCT.md, GLOSSARY.md trước; Next.js bản này khác bản quen thuộc, xem node_modules/next/dist/docs trước khi viết code Next.

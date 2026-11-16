@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import test from 'node:test';
@@ -205,6 +206,75 @@ test('API: POST /api/jobs/:id/replan có kiểm tra nguồn; 400 khi không lậ
     const again = await request(port, { method: 'POST', path: url, body: '{}', headers: json });
     assert.equal(again.status, 400, 'bấm lần hai khi đã đang lập kế hoạch thì bị từ chối');
     await jobIn(ctx, job.id, ['failed', 'done', 'attention']);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+const onePlan = () => JSON.stringify([{ member: 'An', title: 'Việc của An', description: 'Làm phần A', acceptance: 'test chạy qua', files: ['src/a'], level: 'normal' }]);
+const calls = (ctx) => {
+  const file = path.join(ctx.root, 'fake.log');
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+};
+
+test('hết lượt hai lần mà đã có file: hệ thống tự cho làm tiếp một lần rồi nộp bài "chưa xong"; Trưởng nhóm thấy cảnh báo và duyệt được', async () => {
+  const ctx = await boot({ FAKE_PLAN: onePlan(), FAKE_UNIQUE: '1', FAKE_REVIEW: 'approve', FAKE_CLAUDE_SCENARIO: 'maxturns' });
+  try {
+    const job = await newJob(ctx);
+    const done = await jobIn(ctx, job.id, ['done', 'attention', 'failed']);
+    assert.equal(done.status, 'done', done.error ?? '');
+    const an = ctx.store.jobTasks(job.id).find((t) => t.kind === 'work');
+    assert.deepEqual([an.status, an.partial, an.auto_continues, an.failure_code], ['done', 1, 1, 'max_turns']);
+    assert.deepEqual(JSON.parse(an.changed_files), [outFile(an)]);
+    assert.match(an.result, /BÀI NỘP CHƯA XONG/);
+    const events = ctx.store.listEvents(an.id).map((e) => e.summary);
+    assert.ok(events.some((s) => /Tự cho làm tiếp một lần/.test(s)));
+    assert.ok(events.some((s) => /Đã nộp phần đã làm \(1 file\)/.test(s)));
+    const review = calls(ctx).find((c) => /BÀI NỘP CHƯA XONG \(hệ thống nộp thay\)/.test(c.prompt));
+    assert.ok(review, 'Trưởng nhóm được báo đây là bài chưa xong');
+    assert.ok(git(ctx.project, 'ls-tree', '-r', '--name-only', done.merge_branch).split('\n').includes(outFile(an)), 'phần đã làm được gộp');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('việc con chết (tiến trình thoát) hai lần: tự giao lại một lần cho người khác còn chỗ, phiên mới, kèm ghi chú; vẫn chết thì mới lỗi', async () => {
+  const ctx = await boot({ FAKE_PLAN: onePlan(), FAKE_UNIQUE: '1', FAKE_CLAUDE_SCENARIO: 'crash' });
+  try {
+    const job = await newJob(ctx);
+    const final = await jobIn(ctx, job.id, ['done', 'attention', 'failed']);
+    assert.equal(final.status, 'failed');
+    const task = ctx.store.jobTasks(job.id).find((t) => t.kind === 'work');
+    assert.equal(task.status, 'failed');
+    assert.equal(task.reassigns, 1);
+    assert.notEqual(task.member, 'An', 'giao cho người khác trong team');
+    assert.equal(task.role, 'backend-dev');
+    assert.equal(task.attempts, 4, 'An 2 lần (tự thử lại), người mới 2 lần');
+    const events = ctx.store.listEvents(task.id).map((e) => e.summary);
+    assert.ok(events.some((s) => new RegExp(`tự giao lại cho ${task.member} làm từ đầu`).test(s)));
+    const handed = calls(ctx).find((c) => /Ghi chú của hệ thống về lần làm trước/.test(c.prompt));
+    assert.ok(handed && /do An làm\) bị dừng vì lỗi/.test(handed.prompt), 'người mới được báo lý do lần trước lỗi');
+    assert.equal(ctx.store.getTask(task.id).system_note, null, 'ghi chú dùng xong thì xóa');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('việc con báo có file mà nhánh trống: không đưa cho Trưởng nhóm duyệt, đánh lỗi no_changes để chủ xử lý', async () => {
+  const ctx = await boot({ FAKE_PLAN: onePlan(), FAKE_UNIQUE: '1', FAKE_CLAUDE_SCENARIO: 'claim_only' });
+  try {
+    const job = await newJob(ctx);
+    const final = await jobIn(ctx, job.id, ['done', 'attention', 'failed']);
+    assert.notEqual(final.status, 'done');
+    const tasks = ctx.store.jobTasks(job.id);
+    const work = tasks.find((t) => t.kind === 'work');
+    assert.equal(work.status, 'failed');
+    assert.equal(work.failure_code, 'no_changes');
+    assert.equal(work.reassigns, 0, 'lỗi này thường do môi trường, giao người khác cũng vậy: để chủ xem');
+    assert.equal(tasks.filter((t) => t.kind === 'review').length, 0, 'Trưởng nhóm không phải duyệt bài rỗng');
+    const info = await inspectFailure({ store: ctx.store, projectRoot: ctx.project, id: work.id });
+    assert.match(info.diagnosis.title, /nhánh trống/);
+    assert.equal(info.diagnosis.hasWork, false);
   } finally {
     await ctx.cleanup();
   }

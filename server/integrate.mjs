@@ -11,6 +11,8 @@ import { git, gitResult, GIT_IDENTITY, parsePorcelainZ } from './worktree.mjs';
 // Tên nhánh do chính công cụ đặt (an toàn), nhưng vẫn kiểm lại trước khi đưa vào lệnh git.
 const BRANCH_RE = /^company\/[a-z0-9][a-z0-9._-]*$/;
 const KINDS = new Set(['task', 'job', 'epic']);
+// Yêu cầu còn đang chạy (chưa kết thúc) thì việc lớn trong nó chưa được đưa riêng: kết quả còn đổi và sẽ được ghép chung.
+const EPIC_OPEN = new Set(['planning', 'awaiting_plan', 'running', 'integrating', 'reviewing', 'awaiting_result']);
 
 /** Việc nào được phép đưa vào dự án, và nhánh của nó. */
 export function subjectOf(store, kind, id) {
@@ -27,8 +29,16 @@ export function subjectOf(store, kind, id) {
   if (kind === 'job') {
     const job = store.getJob(id);
     if (!job) return { error: 'Không có việc lớn này.' };
-    if (job.epic_id) return { error: 'Việc lớn thuộc một yêu cầu được đưa vào dự án cùng yêu cầu đó.' };
-    if (job.status !== 'done') return { error: 'Chỉ đưa được việc lớn đã xong.' };
+    if (job.epic_id) {
+      // Yêu cầu đã kết thúc (kể cả lỗi, cần xem, bị dừng) mà việc lớn này có nhánh gộp: cho đưa riêng, khỏi phải cứu tay bằng git.
+      const epic = store.getEpic(job.epic_id);
+      if (epic && EPIC_OPEN.has(epic.status)) {
+        return { error: `Việc lớn thuộc yêu cầu #${epic.id} đang chạy (${epic.status}): đợi yêu cầu kết thúc rồi đưa cả yêu cầu, hoặc đưa riêng việc này khi yêu cầu đã đóng.` };
+      }
+    }
+    if (!['done', 'attention'].includes(job.status) || !job.merge_branch) {
+      return { error: job.status === 'attention' ? 'Việc lớn này chưa có nhánh gộp (chưa có việc con nào được duyệt).' : 'Chỉ đưa được việc lớn đã xong (hoặc "cần xem" nhưng đã có nhánh gộp).' };
+    }
     return { title: job.title, branch: job.merge_branch };
   }
   const epic = store.getEpic(id);

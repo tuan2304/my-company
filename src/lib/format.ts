@@ -17,6 +17,7 @@ export const EPIC_STATUS_LABEL: Record<EpicStatus, string> = {
 export const JOB_STATUS_LABEL: Record<JobStatus, string> = {
   draft: 'Nháp (chờ duyệt kế hoạch)',
   waiting: 'Chờ việc phụ thuộc',
+  blocked: 'Chờ bạn quyết định',
   planning: 'Đang lập kế hoạch',
   running: 'Đang làm',
   awaiting_choice: 'Chờ bạn chọn bản',

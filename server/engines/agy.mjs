@@ -258,14 +258,14 @@ const PROMPT_FILE_LIMIT = 12_000;
  *   (skill đã duyệt), AGENTS.md (lời nhắc hệ thống). Tất cả đều được loại khỏi commit (workspaceExcludes).
  * - Lượt chỉ đọc (trả lời câu hỏi) chạy từ thư mục riêng của lượt (`runDir`) với `--add-dir` trỏ vào thư mục thật, để không ghi gì vào dự án.
  */
-export function prepareAgyRun({ cwd, runDir, readonly, guardMode = null, root, allow = [], commands = [], systemText = '', skillsDir = null, prompt = '' }) {
+export function prepareAgyRun({ cwd, runDir, readonly, guardMode = null, root, allow = [], links = [], commands = [], systemText = '', skillsDir = null, prompt = '' }) {
   const base = readonly ? runDir : cwd;
   const agentsDir = path.join(base, '.agents');
   const guardDir = path.join(agentsDir, GUARD_DIR_NAME);
   fs.mkdirSync(guardDir, { recursive: true });
 
   for (const file of ['agy-guard.mjs', 'path-guard.mjs']) fs.copyFileSync(path.join(SERVER_DIR, file), path.join(guardDir, file));
-  writeUtf8(path.join(guardDir, 'config.json'), JSON.stringify({ root, allow, mode: readonly ? 'readonly' : guardMode ?? 'worker' }, null, 2));
+  writeUtf8(path.join(guardDir, 'config.json'), JSON.stringify({ root, allow, links, mode: readonly ? 'readonly' : guardMode ?? 'worker' }, null, 2));
   // Lệnh KHÔNG dùng dấu ngoặc kép (agy làm hỏng chúng trên Windows); thư mục hiện tại của hook là .agents.
   writeUtf8(path.join(agentsDir, 'hooks.json'), JSON.stringify(mergeHooks(path.join(agentsDir, 'hooks.json'), `node ${GUARD_DIR_NAME}/agy-guard.mjs`), null, 2));
 

@@ -41,8 +41,8 @@ async function boot({ preview = true, env = {} } = {}) {
 
 const newContest = (ctx, over = {}) => ctx.runner.jobs.create({ team: 'backend', title: 'Làm trang chủ', prompt: 'Làm trang chủ', contest: SETS, ...over });
 const status = (ctx, id, ...wanted) => waitFor(() => wanted.includes(ctx.store.getJob(id).status) && ctx.store.getJob(id), { timeout: 40000, label: `việc lớn #${id} sang ${wanted.join('/')}` });
-const flag = (call, name) => call.args[call.args.indexOf(name) + 1];
-const skillsIn = (call) => fs.readdirSync(path.join(flag(call, '--plugin-dir'), 'skills')).sort();
+// Gói skill bị dọn khi xong việc, nên đọc danh sách mà fake-claude ghi lại lúc đang chạy.
+const skillsIn = (call) => call.pluginSkills;
 
 test('validateSets: chặn bộ trống, skill chưa duyệt, tên lạ, hai bộ giống nhau; nhận đúng cả khóa a/b', () => {
   assert.deepEqual(validateSets(SETS, LOCK), { A: SETS.a, B: SETS.b });

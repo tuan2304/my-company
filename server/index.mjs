@@ -402,7 +402,7 @@ export async function startServer({ cfg, dev = false, withUi = true, uiHandler =
         const body = await readJson(req);
         if (action === 'approve-plan') await runner.epics.approvePlan(id);
         else if (action === 'reject-plan') runner.epics.rejectPlan(id, body.feedback);
-        else if (action === 'approve-result') runner.epics.approveResult(id);
+        else if (action === 'approve-result') await runner.epics.approveResult(id);
         else if (action === 'reject-result') runner.epics.rejectResult(id, body.feedback);
         else await runner.epics.stop(id, 'Yêu cầu bị dừng theo yêu cầu.');
         return sendJson(res, 200, { epic: store.getEpic(id) });

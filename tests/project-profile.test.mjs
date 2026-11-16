@@ -129,6 +129,24 @@ test('loadProject: khóa cũ "reports" được hiểu là "report" (không âm 
   }
 });
 
+test('loadProject: worktree_links mặc định node_modules; worktree_copies mặc định rỗng; bản nháp của init có nhắc worktree_copies', () => {
+  const dir = tmpDir();
+  try {
+    const save = (value) => fs.writeFileSync(path.join(dir, 'project.md'), `---\nname: x\n${value}\n---\n`);
+    save('stack: []');
+    assert.deepEqual(loadProject(dir).worktreeLinks, ['node_modules']);
+    assert.deepEqual(loadProject(dir).worktreeCopies, []);
+    save('worktree_links: [node_modules, public/vendor]\nworktree_copies: [AGENTS.md, docs/rieng]');
+    assert.deepEqual(loadProject(dir).worktreeLinks, ['node_modules', 'public/vendor']);
+    assert.deepEqual(loadProject(dir).worktreeCopies, ['AGENTS.md', 'docs/rieng']);
+    save('worktree_copies: AGENTS.md');
+    assert.deepEqual(loadProject(dir).worktreeCopies, [], 'kiểu sai thì bỏ qua');
+    assert.match(renderProjectDraft({ name: 'n', stack: [], commands: {} }), /# worktree_copies: \[AGENTS\.md\]/);
+  } finally {
+    removeDir(dir);
+  }
+});
+
 test('loadProject: role_skills đọc đúng; kiểu sai (mảng, chuỗi) bị bỏ qua thay vì làm hỏng hồ sơ', () => {
   const dir = tmpDir();
   try {

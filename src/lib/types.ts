@@ -2,7 +2,7 @@ export type TaskStatus = 'queued' | 'running' | 'paused_quota' | 'waiting_answer
 
 export type TaskKind = 'work' | 'plan' | 'review' | 'dplan' | 'dreview' | 'answer';
 
-export type JobStatus = 'draft' | 'waiting' | 'planning' | 'running' | 'awaiting_choice' | 'integrating' | 'done' | 'attention' | 'failed' | 'stopped';
+export type JobStatus = 'draft' | 'waiting' | 'blocked' | 'planning' | 'running' | 'awaiting_choice' | 'integrating' | 'done' | 'attention' | 'failed' | 'stopped';
 
 /** Thi đấu skill (xem server/contest.mjs). Chưa chọn thì không có tên người và bộ skill của từng phương án (chấm mù). */
 export interface ContestOption {
@@ -363,8 +363,11 @@ export interface IntegrationInfo {
 }
 
 export interface FailureOption {
-  /** Hành động với việc/lượt: continue, raise, redo, accept, skip. Riêng yêu cầu còn có proceed (bỏ phần lỗi) và accept (vẫn nhận kết quả). */
-  action: 'continue' | 'raise' | 'redo' | 'accept' | 'skip' | 'proceed';
+  /**
+   * Hành động với việc/lượt: continue, raise, redo, accept, skip. Riêng yêu cầu còn có proceed (bỏ phần lỗi), accept (vẫn nhận kết quả),
+   * và start_job:<id> / cancel_job:<id> cho việc đang chờ quyết định vì việc nó phụ thuộc không xong.
+   */
+  action: string;
   label: string;
   hint: string;
   /** Có nhận lời dặn thêm của chủ không: false, 'optional' hoặc 'recommended'. */
@@ -391,7 +394,7 @@ export interface FailureInfo {
     badJobs?: { id: number; title: string; status: string; lead: string; error: string | null }[];
   };
   evidence: { ts: number; kind: string; summary: string }[];
-  work: { branch: string; stat: string; patch: string; truncated: boolean } | null;
+  work: { branch: string; stat: string; patch: string; truncated: boolean; files: string[] } | null;
 }
 
 /** Câu hỏi nhân viên gửi cho chủ công ty (GET /api/questions/:id). */

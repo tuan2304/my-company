@@ -7,6 +7,7 @@ import { describeFolders, folderRules, inFolders } from './path-guard.mjs';
 import { findMember, workersOf } from './teams.mjs';
 import { branchDiff, checkRepo, integrateBranches, removeWorktreeKeepBranch, resolveRef } from './worktree.mjs';
 import { knownFailuresLine } from './project.mjs';
+import { renderFileMap } from './file-map.mjs';
 
 /**
  * Điều phối việc lớn (job) của một team:
@@ -18,6 +19,8 @@ import { knownFailuresLine } from './project.mjs';
 const WORK_OPEN = ['queued', 'running', 'paused_quota', 'submitted', 'waiting_answer'];
 const LEAD_OPEN = ['queued', 'running', 'paused_quota'];
 export const JOB_TERMINAL = ['done', 'attention', 'failed', 'stopped'];
+/** Mã lỗi của việc con mà giao lại (người khác, phiên mới) có cơ may qua. Xem autoReassign. */
+const REASSIGNABLE = ['crash', 'error_result', 'internal', 'max_turns', 'timeout'];
 
 export class JobError extends Error {}
 
@@ -50,6 +53,9 @@ export function findOverlap(files, otherFiles) {
   for (const a of files) for (const b of otherFiles) if (overlaps(a, b)) return [a, b];
   return null;
 }
+
+// Một việc con không được ôm quá nhiều chỗ: nhân viên chỉ có vài chục lượt, mỗi file đọc/sửa là một lượt.
+export const MAX_SCOPE_ENTRIES = 6;
 
 function parseFiles(value) {
   try {
@@ -334,6 +340,9 @@ export class Jobs {
     }
 
     const files = this.checkScope(args.files, team);
+    if (files.length > MAX_SCOPE_ENTRIES) {
+      throw toolError(`Phạm vi của việc con có ${files.length} mục, quá ${MAX_SCOPE_ENTRIES}: việc này quá to cho một người trong một lượt chạy. Hãy chia thành vài việc con nhỏ (mỗi việc tối đa khoảng 3 file hoặc 1 API/1 màn hình), hoặc khai phạm vi bằng thư mục thay vì liệt kê từng file.`);
+    }
     for (const other of existing.filter((t) => !['failed', 'stopped'].includes(t.status))) {
       const clash = findOverlap(files, parseFiles(other.files));
       if (clash) {
@@ -409,6 +418,8 @@ export class Jobs {
       await this.contests.progress(job.id);
       return;
     }
+    // Việc con lỗi mà không để lại bài: tự giao lại một lần trước khi để việc lớn kết luận thiếu phần đó.
+    if (task.kind === 'work' && task.status === 'failed') await this.autoReassign(job, task);
     if (task.kind === 'work' && task.status === 'submitted') {
       const pending = this.store.jobTasks(job.id).some((t) => t.kind === 'review' && t.subject_id === task.id && LEAD_OPEN.includes(t.status));
       if (!pending) this.r.createLeadTask({ kind: 'review', job, subject: task });
@@ -420,6 +431,52 @@ export class Jobs {
       return;
     }
     await this.advance(job.id);
+  }
+
+  /**
+   * Việc con lỗi vì hạ tầng (tiến trình thoát, engine báo lỗi, lỗi nội bộ) hoặc hết lượt/quá giờ mà không để lại file nào
+   * (có file thì đã được nộp "chưa xong" cho Trưởng nhóm): tự giao lại MỘT lần cho người khác còn chỗ trong team, phiên mới,
+   * kèm ghi chú lỗi lần trước; không còn ai rảnh thì cùng người đó làm lại từ đầu. Trưởng nhóm đã trả bài hết lượt
+   * (rejected_final) hay không kết luận được (review_no_verdict) thì không: đó là chuyện của con người quyết.
+   */
+  async autoReassign(job, task) {
+    if (parseContest(job) || task.reassigns >= 1) return false;
+    if (!REASSIGNABLE.includes(task.failure_code)) return false;
+    const found = findMember(this.r.getTeams(), task.member);
+    if (!found) return false;
+    const team = found.team;
+    const other = workersOf(team)
+      .filter((m) => m.name !== task.member)
+      .sort((a, b) => Number(b.role === found.member.role) - Number(a.role === found.member.role)) // ưu tiên cùng vai trò
+      .find((m) => {
+        try {
+          this.r.checkCapacity(findMember(this.r.getTeams(), m.name));
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    const member = other?.name ?? task.member;
+    const oldBranch = task.branch;
+    if (task.worktree) {
+      await removeWorktreeKeepBranch({ projectRoot: this.r.cfg.projectRoot, worktreesDir: this.r.cfg.worktreesDir, dir: task.worktree });
+    }
+    const note = [
+      `Lần làm trước của việc này${other ? ` (do ${task.member} làm)` : ''} bị dừng vì lỗi: ${shorten(task.error ?? task.failure_code ?? 'không rõ', 300)}`,
+      oldBranch ? `Nhánh cũ ${oldBranch} vẫn còn để tham khảo nếu cần, nhưng hãy làm trên thư mục hiện tại (bắt đầu lại từ mã gốc).` : '',
+      'Hãy làm gọn: đọc đúng file cần thiết, làm theo bước nhỏ, chạy test sớm, và nộp bài đúng bốn mục dù chưa trọn vẹn.',
+    ].filter(Boolean).join(' ');
+    this.r.update(task.id, {
+      status: 'queued', member, role: other ? other.role : task.role,
+      error: null, failure_code: null, finished_at: null, resume_at: null,
+      session_id: null, worktree: null, branch: null, changed_files: null, result: null, turns: 0,
+      auto_retries: 0, auto_continues: 0, partial: 0, reassigns: task.reassigns + 1, system_note: note,
+    });
+    this.r.log(task.id, 'warn', other
+      ? `Việc lỗi (${task.failure_code}): hệ thống tự giao lại cho ${member} làm từ đầu, một lần duy nhất${oldBranch ? ` (nhánh cũ ${oldBranch} vẫn giữ)` : ''}.`
+      : `Việc lỗi (${task.failure_code}): không còn ai rảnh trong team, hệ thống tự cho ${member} làm lại từ đầu bằng phiên mới, một lần duy nhất.`);
+    this.jobLog(job, 'job', `Việc con #${task.id} lỗi (${task.failure_code}), tự giao lại cho ${member}.`);
+    return true;
   }
 
   /** Lượt duyệt kết thúc mà chưa có kết luận (agent quên gọi công cụ hoặc lỗi): thử lại một lần. */
@@ -471,7 +528,7 @@ export class Jobs {
   /** Tính lại trạng thái việc lớn từ trạng thái các việc con; khi mọi việc đã xong thì gộp nhánh và báo cáo. */
   async advance(jobId) {
     const job = this.store.getJob(jobId);
-    if (!job || JOB_TERMINAL.includes(job.status) || ['integrating', 'draft', 'waiting', 'awaiting_choice'].includes(job.status)) return;
+    if (!job || JOB_TERMINAL.includes(job.status) || ['integrating', 'draft', 'waiting', 'blocked', 'awaiting_choice'].includes(job.status)) return;
     if (parseContest(job)) {
       await this.contests.progress(jobId);
       return;
@@ -573,6 +630,12 @@ export class Jobs {
         '',
         '## Tải hiện tại của team',
         this.renderWorkload(team),
+      );
+      // Bản đồ file thư mục của team: Trưởng nhóm chia việc theo file có thật, không tốn lượt dò thư mục.
+      const own = this.r.getProject()?.folders?.[team.id] ?? [];
+      const map = own.length ? renderFileMap({ root: job.base_dir || this.r.cfg.projectRoot, scopes: own, title: 'Bản đồ file thư mục của team (để chia việc theo file có thật)' }) : '';
+      if (map) lines.push('', map);
+      lines.push(
         '',
         `Hãy đọc code liên quan, chia việc lớn này thành tối đa ${team.limits.max_subtasks} việc con độc lập và giao từng việc bằng công cụ assign_to_member.`,
       );
@@ -588,6 +651,15 @@ export class Jobs {
       `# Duyệt bài nộp: việc #${subject.id} "${subject.title}"`,
       `task_id: ${subject.id}`,
       `Người nộp: ${subject.member}. Số lần đã trả bài: ${subject.revisions}.`,
+      ...(subject.partial
+        ? [
+          '',
+          '## BÀI NỘP CHƯA XONG (hệ thống nộp thay)',
+          'Nhân viên hết số lượt hoặc quá giờ hai lần mà chưa báo xong; hệ thống nộp phần đã làm để bạn quyết định thay vì bỏ phí.',
+          '- approve: nếu phần đã làm dùng được an toàn trên nhánh chung (không để code dở làm hỏng build hay test) và đủ phần cốt lõi của yêu cầu. Ghi rõ trong feedback phần còn thiếu để Trưởng nhóm/chủ biết.',
+          '- reject kèm nhận xét: liệt kê ĐÚNG những việc còn thiếu theo thứ tự ưu tiên, để nhân viên làm tiếp trong phiên cũ (có thêm lượt). Đừng yêu cầu làm lại từ đầu.',
+        ]
+        : []),
       '',
       `## Việc lớn #${job.id}: ${job.title}`,
       shorten(job.prompt, 1500),
@@ -612,6 +684,12 @@ export class Jobs {
       `Thư mục hiện tại là nhánh của ${subject.member}; bạn có thể đọc file ở đây để kiểm tra thêm. Hãy kết luận bằng một lần gọi review_submission.`,
     ].join('\n');
   }
+}
+
+/** Số lượt ít nhất mà một nhân viên của team có cho một việc (để Trưởng nhóm biết ngân sách khi chia việc). */
+function workerTurns(team) {
+  const turns = workersOf(team).map((m) => Number(team.roles?.[m.role]?.max_turns)).filter((n) => Number.isFinite(n) && n > 0);
+  return turns.length ? Math.min(...turns) : 30;
 }
 
 export function buildLeadSystemPrompt({ member, team, role, project, kind }) {
@@ -639,6 +717,8 @@ export function buildLeadSystemPrompt({ member, team, role, project, kind }) {
         '## Cách lập kế hoạch',
         '- Đọc code liên quan trước, rồi gọi get_team_workload để biết ai còn chỗ.',
         `- Chia thành tối đa ${team.limits.max_subtasks} việc con. Mỗi việc con giao cho đúng MỘT người bằng assign_to_member. Chọn người theo thế mạnh và tải hiện tại.`,
+        `- Việc con phải NHỎ: mỗi việc tối đa khoảng 3 file sửa/tạo, hoặc 1 API, hoặc 1 màn hình. Nhân viên chỉ có khoảng ${workerTurns(team)} lượt cho một việc (mỗi lần đọc file, sửa file hay chạy lệnh là một lượt), nên việc ôm 5-6 file là chắc chắn hết lượt giữa chừng. Việc lớn hơn thì chia thành nhiều việc con (phạm vi quá ${MAX_SCOPE_ENTRIES} mục sẽ bị từ chối); cần thứ tự (migration rồi API rồi giao diện) thì giao các phần đó cho CÙNG một người, hệ thống sẽ chạy lần lượt.`,
+        '- Trong mô tả việc con, kể đúng tên file cần đọc và cần sửa (lấy từ bản đồ file trong đề bài) để nhân viên khỏi dò thư mục.',
         '- Các việc con chạy SONG SONG, nên chúng phải độc lập: khai báo "files" (file hoặc thư mục sẽ sửa) và các việc con KHÔNG được chồng lấn nhau. Nếu việc B cần kết quả của việc A thì đừng chia thành hai việc, hãy giao cả hai cho cùng một người.',
         '- Mỗi việc con phải tự chứa đủ thông tin để làm mà không cần hỏi lại: file nào, hành vi mong muốn, ràng buộc, cách kiểm tra. Tiêu chí hoàn thành phải kiểm chứng được (ví dụ "npm test chạy qua và có test cho X").',
         '- Có thể ghi "level": easy cho việc cơ học nhỏ, hard cho việc cần suy nghĩ sâu (thiết kế, schema, xác thực, lỗi khó). Không chắc thì bỏ trống để hệ thống tự đánh giá.',

@@ -2,7 +2,7 @@ import { describeFolders } from './path-guard.mjs';
 import { UserError } from './errors.mjs';
 import { shorten } from './guard.mjs';
 import { findMember, workersOf } from './teams.mjs';
-import { checkRepo, integrateBranches, resolveRef } from './worktree.mjs';
+import { checkRepo, gitResult, integrateBranches, resolveRef } from './worktree.mjs';
 import { knownFailuresLine } from './project.mjs';
 
 /**
@@ -270,12 +270,24 @@ export class Epics {
     return this.store.getEpic(id);
   }
 
-  approveResult(id) {
+  async approveResult(id) {
     const epic = this.store.getEpic(id);
     if (!epic) throw new UserError('Không có yêu cầu này.');
     if (epic.status !== 'awaiting_result') throw new UserError('Yêu cầu không ở trạng thái chờ duyệt kết quả.');
+    // Lưới an toàn: báo cáo của Giám đốc có thể nói "đạt" trong khi nhánh gộp không có một thay đổi nào (việc con mất commit,
+    // hoặc mọi team đều lỗi). Duyệt một kết quả rỗng là đóng yêu cầu mà không nhận được gì, nên chặn và nói rõ.
+    const empty = await this.mergeBranchEmpty(epic);
+    if (empty) throw new UserError(empty);
     this.log(epic, 'job', 'Chủ đã duyệt kết quả. Yêu cầu hoàn thành.');
     return this.finishEpic(epic, { status: 'done', error: null });
+  }
+
+  /** Lý do (chuỗi) nếu nhánh gộp của yêu cầu không khác mã gốc; null nếu có thay đổi hoặc không kiểm được. */
+  async mergeBranchEmpty(epic) {
+    if (!epic.merge_branch) return 'Yêu cầu chưa có nhánh gộp nào nên không có kết quả để duyệt. Hãy "Không duyệt" kèm nhận xét, hoặc dừng yêu cầu.';
+    const diff = await gitResult(this.r.cfg.projectRoot, ['diff', '--quiet', `${epic.base_commit}..${epic.merge_branch}`]);
+    if (diff.code !== 0) return null; // 1 = có khác biệt; mã khác = không kiểm được, không chặn người dùng
+    return `Nhánh gộp ${epic.merge_branch} không có thay đổi nào so với mã gốc: duyệt sẽ đóng yêu cầu mà không nhận được gì. Hãy xem lại từng việc của team (bài nộp có thể bị mất commit), rồi "Không duyệt" kèm nhận xét để làm lại, hoặc dừng yêu cầu.`;
   }
 
   rejectResult(id, feedback) {
@@ -319,14 +331,70 @@ export class Epics {
         if (deps.every((d) => done.has(d))) await this.r.jobs.start(waiting.id);
       }
     } else {
-      for (const waiting of jobs.filter((j) => j.status === 'waiting')) {
-        const deps = JSON.parse(waiting.depends_on ?? '[]');
-        if (deps.includes(job.id)) {
-          this.r.jobs.finishJob(waiting, { status: 'failed', error: `Việc #${job.id} "${job.title}" mà việc này phụ thuộc không hoàn thành (${job.status}).` });
-        }
-      }
+      this.blockDependents(epic, job);
     }
     await this.evaluate(epic.id);
+  }
+
+  /**
+   * Việc nó phụ thuộc không xong: KHÔNG đánh lỗi dây chuyền (việc này chưa chạy lượt nào) mà chuyển sang "chờ quyết định" (blocked),
+   * kể cả các việc phụ thuộc gián tiếp. Yêu cầu sẽ về "cần xem" và chủ chọn cho từng việc: chạy trên phần đã có, hay hủy (xem epic-recovery).
+   */
+  blockDependents(epic, job) {
+    const stuck = new Set([job.id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const other of this.store.epicJobs(epic.id)) {
+        if (stuck.has(other.id) || other.status !== 'waiting') continue;
+        const deps = JSON.parse(other.depends_on ?? '[]');
+        const cause = deps.find((d) => stuck.has(d));
+        if (cause === undefined) continue;
+        stuck.add(other.id);
+        grew = true;
+        const causeJob = this.store.getJob(cause);
+        const blocked = this.store.updateJob(other.id, {
+          status: 'blocked',
+          error: `Việc #${cause} "${causeJob?.title ?? ''}" mà việc này phụ thuộc đã kết thúc ở "${causeJob?.status ?? '?'}" nên việc này chưa chạy. Bạn quyết định: cho chạy trên phần đã có, hoặc hủy.`,
+        });
+        this.r.jobs.jobLog(blocked, 'job', `Việc lớn #${blocked.id} chờ chủ quyết định: việc #${cause} nó phụ thuộc không hoàn thành (${causeJob?.status ?? '?'}).`);
+        this.r.emit('job', blocked);
+      }
+    }
+  }
+
+  /**
+   * Chủ cho một việc đang "chờ quyết định" chạy dù việc nó phụ thuộc không xong: gốc là phần đã được duyệt của các việc nó chờ
+   * (nhánh gộp của việc "cần xem"), còn lại là mã gốc của yêu cầu. Yêu cầu quay về "đang chạy".
+   */
+  async startBlocked(epicId, jobId) {
+    const { epic, job } = this.blockedJob(epicId, jobId);
+    if (epic.status !== 'running') this.update(epicId, { status: 'running', error: null, summary: null, conflict_files: null, finished_at: null });
+    this.r.emit('job', this.store.updateJob(jobId, { status: 'waiting', error: null }));
+    this.log(epic, 'job', `Chủ cho việc lớn #${jobId} chạy dù việc nó phụ thuộc không xong (dùng phần đã có).`);
+    await this.r.jobs.start(jobId);
+    return this.store.getEpic(epicId);
+  }
+
+  /** Chủ hủy một việc đang "chờ quyết định": việc thành lỗi, yêu cầu kết luận lại với phần còn lại. */
+  async cancelBlocked(epicId, jobId) {
+    const { epic, job } = this.blockedJob(epicId, jobId);
+    const cancelled = this.store.updateJob(jobId, { status: 'failed', error: 'Bạn đã hủy việc này vì việc nó phụ thuộc không xong.', finished_at: Date.now() });
+    this.r.emit('job', cancelled);
+    this.log(epic, 'job', `Chủ hủy việc lớn #${jobId} "${job.title}".`);
+    this.blockDependents(epic, cancelled);
+    if (epic.status !== 'running') this.update(epicId, { status: 'running', error: null, summary: null, conflict_files: null, finished_at: null });
+    await this.evaluate(epicId);
+    return this.store.getEpic(epicId);
+  }
+
+  blockedJob(epicId, jobId) {
+    const epic = this.store.getEpic(epicId);
+    const job = this.store.getJob(jobId);
+    if (!epic || !job || job.epic_id !== epicId) throw new UserError('Không có việc này trong yêu cầu.');
+    if (job.status !== 'blocked') throw new UserError(`Việc lớn #${jobId} không ở trạng thái chờ quyết định (hiện là "${job.status}").`);
+    if (!['running', 'attention', 'failed'].includes(epic.status)) throw new UserError(`Yêu cầu đang ở trạng thái "${epic.status}" nên chưa xử lý việc này được.`);
+    return { epic, job };
   }
 
   // ---------- Chủ cứu yêu cầu lỗi ----------
@@ -344,13 +412,14 @@ export class Epics {
       this.update(epic.id, { status: 'running', error: null, summary: null, conflict_files: null, finished_at: null });
       this.log(epic, 'job', `Chủ mở lại yêu cầu #${epic.id} để cứu việc lớn #${job.id}.`);
     }
-    // Việc phụ thuộc (kể cả gián tiếp) bị đánh lỗi dây chuyền thì chưa từng có kế hoạch riêng (plan_task_id rỗng): cho chờ lại.
+    // Việc phụ thuộc (kể cả gián tiếp) đang "chờ quyết định", hoặc bị đánh lỗi dây chuyền (dữ liệu cũ), thì chưa từng có kế hoạch riêng
+    // (plan_task_id rỗng): cho chờ lại.
     const reset = new Set([job.id]);
     let grew = true;
     while (grew) {
       grew = false;
       for (const other of this.store.epicJobs(epic.id)) {
-        if (reset.has(other.id) || other.status !== 'failed' || other.plan_task_id !== null) continue;
+        if (reset.has(other.id) || !['failed', 'blocked'].includes(other.status) || other.plan_task_id !== null) continue;
         const deps = JSON.parse(other.depends_on ?? '[]');
         if (deps.some((d) => reset.has(d))) {
           reset.add(other.id);
@@ -387,6 +456,10 @@ export class Epics {
     const jobs = this.store.epicJobs(id);
     if (jobs.some((j) => JOB_OPEN.includes(j.status))) throw new UserError('Vẫn còn việc đang chạy.');
     if (this.usableJobs(epic, jobs).length === 0) throw new UserError('Chưa có việc nào có kết quả để cho Giám đốc kiểm tra.');
+    // Việc đang "chờ quyết định" nằm trong phần bị bỏ: đóng lại cho rõ, không để lơ lửng trong một yêu cầu đã kết thúc.
+    for (const j of jobs.filter((j) => j.status === 'blocked')) {
+      this.r.emit('job', this.store.updateJob(j.id, { status: 'failed', error: `${j.error ?? ''} Bạn đã chọn bỏ phần lỗi nên việc này không chạy.`.trim(), finished_at: Date.now() }));
+    }
     this.update(id, { status: 'running', error: null, summary: null, conflict_files: null, finished_at: null });
     this.log(epic, 'job', 'Chủ quyết định bỏ phần lỗi, cho Giám đốc kiểm tra phần đã có.');
     await this.evaluate(id, { partial: true });
@@ -446,7 +519,8 @@ export class Epics {
   buildSummary(epic, jobs) {
     const lines = [`Yêu cầu #${epic.id}: ${epic.title}`, ''];
     for (const j of jobs) {
-      lines.push(`- Việc #${j.id} (${j.team}${j.round ? `, làm lại đợt ${j.round}` : ''}): ${j.title} — ${j.status}${j.merge_branch ? `, nhánh ${j.merge_branch}` : ''}`);
+      const state = j.status === 'blocked' ? 'blocked (chưa chạy vì việc nó phụ thuộc không xong)' : j.status;
+      lines.push(`- Việc #${j.id} (${j.team}${j.round ? `, làm lại đợt ${j.round}` : ''}): ${j.title} — ${state}${j.merge_branch ? `, nhánh ${j.merge_branch}` : ''}`);
     }
     const tasks = [...jobs.flatMap((j) => this.store.jobTasks(j.id)), ...this.store.epicTasks(epic.id)];
     const sum = (key) => tasks.reduce((n, t) => n + (t[key] ?? 0), 0);
@@ -517,6 +591,7 @@ export function buildDirectorSystemPrompt({ member, team, role, project, kind })
         '- Việc của team cần kết quả ĐÃ GHÉP của team khác (test tích hợp của Chất lượng, rà soát của Bảo mật, quy trình CI/CD của DevOps nếu phụ thuộc code mới) phải khai "depends_on" là tiêu đề các việc cần chờ (phải tạo các việc đó trước). Ngược lại, việc thiết kế giao diện của team Thiết kế nên làm TRƯỚC, và việc của Frontend khai depends_on nó.',
         '- Mỗi việc cho team phải đủ rõ để Trưởng nhóm chia nhỏ mà không cần hỏi lại: mục tiêu, phạm vi (thư mục/file), ràng buộc, tiêu chí hoàn thành kiểm chứng được. Đừng mô tả quá chi tiết từng dòng code.',
         '- Chỉ tạo việc cho team khi thật sự cần. Mỗi việc đều tốn hạn mức, và tối đa 6 việc.',
+        '- Mỗi việc cho team phải VỪA SỨC: Trưởng nhóm chỉ chia được tối đa 5 việc con, mỗi việc con khoảng 3 file (nhân viên hết lượt nếu ôm nhiều hơn). Yêu cầu to thì tách thành nhiều việc cho cùng một team theo từng bước (ví dụ migration, rồi API, rồi giao diện), bước sau khai depends_on bước trước, thay vì một việc "làm hết tính năng X".',
         '- Bạn không tự viết code. Khi xong, kết thúc bằng một đoạn tóm tắt kế hoạch ngắn, rõ cho chủ duyệt: hợp đồng chính, team nào làm gì, thứ tự phụ thuộc.',
         '- Không có người trực tiếp để hỏi. Thiếu thông tin thì chọn phương án hợp lý nhất và ghi giả định vào kế hoạch.',
         '- Mỗi lần chỉ chạy MỘT lệnh Bash, không nối bằng &&, ; hay | và không dùng cd.',

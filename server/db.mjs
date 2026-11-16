@@ -193,6 +193,15 @@ const EXTRA_COLUMNS = [
   // mà việc vừa được chuyển đi (để dặn bàn giao trong lời nhắc).
   ['engine', 'TEXT'],
   ['handoff_from', 'TEXT'],
+  // Không để lỗi một chỗ giết cả yêu cầu (đợt 1):
+  //   auto_continues  số lần hệ thống tự cho làm tiếp khi hết lượt/quá giờ (tối đa 1)
+  //   partial         1 = bài nộp "chưa xong" (hết lượt lần nữa nhưng đã có file thay đổi), Trưởng nhóm quyết
+  //   reassigns       số lần hệ thống tự giao lại việc con lỗi cho người khác/phiên mới (tối đa 1)
+  //   system_note     ghi chú của hệ thống cho lần chạy tới (ví dụ lý do lần trước lỗi), dùng xong thì xóa
+  ['auto_continues', 'INTEGER NOT NULL DEFAULT 0'],
+  ['partial', 'INTEGER NOT NULL DEFAULT 0'],
+  ['reassigns', 'INTEGER NOT NULL DEFAULT 0'],
+  ['system_note', 'TEXT'],
 ];
 
 // Cột thêm cho bảng jobs ở giai đoạn 3: việc lớn của team nằm trong một yêu cầu, có thể phụ thuộc việc khác.
@@ -243,6 +252,7 @@ function migrate(db) {
 const TASK_COLUMNS = new Set([
   'level', 'level_source', 'level_reason', 'escalations', 'revisions', 'review_feedback', 'files', 'verdict', 'epic_id',
   'failure_code', 'owner_guidance', 'recoveries', 'auto_retries', 'ask_owner_id', 'engine', 'handoff_from',
+  'auto_continues', 'partial', 'reassigns', 'system_note', 'member', 'role',
   'status', 'model', 'effort', 'session_id', 'worktree', 'branch', 'base_commit', 'attempts', 'result',
   'error', 'changed_files', 'turns', 'duration_ms', 'input_tokens', 'output_tokens', 'cache_read_tokens',
   'cache_creation_tokens', 'est_cost_usd', 'resume_at', 'started_at', 'finished_at',

@@ -40,6 +40,8 @@ Khi mọi team xong, kết quả được ghép vào nhánh `company/epic<số>`
 
 Công cụ **không bao giờ push**. Khi một việc lẻ, việc lớn hoặc yêu cầu đã **xong**, màn chi tiết của nó có khối **Đưa vào dự án**: bấm một lần, rồi bấm **Xác nhận** thì nhánh `company/...` được gộp (`git merge --no-ff`) vào nhánh đang mở ở thư mục dự án.
 
+Việc lớn nằm trong một yêu cầu đã **kết thúc** (xong, cần xem, lỗi hay bị dừng) cũng có khối này, miễn nó đã có nhánh gộp (kể cả việc lớn "cần xem" mới được duyệt một phần): bạn nhận phần của từng team mà không phải gộp tay bằng git. Yêu cầu còn đang chạy thì chưa đưa riêng được. Ngược lại, nút **Duyệt kết quả** của yêu cầu bị chặn kèm lý do khi nhánh gộp không khác mã gốc (duyệt là đóng yêu cầu mà không nhận được gì): hãy xem lại từng việc của team rồi **Không duyệt** kèm nhận xét, hoặc dừng yêu cầu.
+
 Nút chỉ chạy khi bạn bấm, và hệ thống kiểm tra trước, nói rõ nếu chưa đưa được:
 
 - Thư mục dự án đang có file sửa chưa commit: **từ chối**, không đụng vào file nào (code bạn đang viết dở không bị lẫn). Hãy commit hoặc stash trước.
@@ -72,7 +74,13 @@ Việc "làm" bị lỗi (hết lượt, quá giờ, tiến trình thoát, Trư�
 | **Nhận phần đã làm** | Việc lẻ coi như xong với phần hiện có; việc con của việc lớn thì nộp bài cho Trưởng nhóm duyệt. |
 | **Bỏ qua** | Đóng việc lại, nhánh vẫn giữ. |
 
-- **Tự thử lại một lần**: nếu tiến trình `claude` tự thoát bất thường (mạng chập chờn, máy ngủ đông), hệ thống tự làm tiếp đúng phiên cũ **một lần** sau 30 giây. Chỉ lỗi này; hết lượt, quá giờ hay Claude báo lỗi thì không tự thử (tốn hạn mức vô ích) mà chờ bạn.
+- **Hệ thống tự cứu trước khi gọi bạn** (một lỗi không còn giết cả yêu cầu):
+  - *Tiến trình `claude` tự thoát* (mạng chập chờn, máy ngủ đông): tự làm tiếp đúng phiên cũ **một lần** sau 30 giây.
+  - *Hết lượt hoặc quá giờ*: nếu còn bậc model thì nâng một bậc; nếu không, lưu tạm phần đã làm rồi **tự cho làm tiếp một lần** (phiên cũ, thêm lượt, kèm lời nhắc "ưu tiên nộp bài, đừng đọc dò thêm"). Vẫn chưa xong mà đã có file thay đổi và là việc con của việc lớn thì **nộp bài "chưa xong"** cho Trưởng nhóm: Trưởng nhóm được báo rõ và chọn duyệt (phần đã làm dùng được) hay trả lại kèm danh sách việc còn thiếu để nhân viên làm tiếp.
+  - *Việc con lỗi mà không để lại bài* (tiến trình thoát hai lần, engine báo lỗi, lỗi nội bộ, hết lượt với 0 file): **tự giao lại một lần** cho người khác còn chỗ trong team, phiên mới, kèm ghi chú lý do lần trước lỗi; không còn ai rảnh thì cùng người đó làm lại từ đầu. Trưởng nhóm đã trả bài hết số lần thì không tự giao lại, vì đó là quyết định của con người.
+  - *Báo có file thay đổi mà nhánh trống* (ghi nhầm chỗ, bị `.gitignore`, mất commit): việc bị đánh lỗi "Báo có file thay đổi nhưng nhánh trống" thay vì đưa Trưởng nhóm duyệt một bài rỗng. Báo cáo của nhân viên vẫn giữ để bạn xem; bạn chọn làm tiếp hoặc làm lại.
+- **Thẻ việc lỗi nói ngay có gì để cứu:** trong bảng Công việc, việc lỗi mà nhánh đã có file thay đổi ghi "còn bài dở, N file"; màn chi tiết liệt kê các file đó và đưa phương án nên chọn (thường là **Làm tiếp**) lên đầu.
+- **Việc được chia nhỏ từ đầu:** Trưởng nhóm bị buộc chia việc con tối đa khoảng 3 file hoặc 1 API/1 màn hình (phạm vi quá 6 mục bị từ chối) và được báo ngân sách lượt của nhân viên; Giám đốc được dặn tách yêu cầu to thành nhiều việc theo bước (migration, API, giao diện) với `depends_on`. Đề bài của Trưởng nhóm có sẵn **bản đồ file** thư mục của team, đề bài của nhân viên có bản đồ file trong phạm vi việc con, để không ai tốn hàng chục lượt dò thư mục.
 - **Việc con của việc lớn**: nếu việc lớn còn đang chạy, bạn cứu được ngay. Nếu việc lớn đã kết thúc ở "Cần bạn xem" hoặc "Lỗi", xử lý việc con sẽ **mở lại việc lớn**; xong thì hệ thống gộp lại sang nhánh mới `company/job<số>-2` (nhánh gộp cũ vẫn giữ). Việc lớn lỗi vì Trưởng nhóm chưa chia được việc thì có nút **Cho Trưởng nhóm lập kế hoạch lại**. Việc lớn nằm trong một yêu cầu cũng cứu được như vậy, miễn yêu cầu đang chạy, cần xem hoặc lỗi (xem bên dưới).
 - Việc lỗi, việc lớn lẻ lỗi và yêu cầu lỗi đều vào khối "Cần bạn quyết" và có **thông báo đẩy** như kế hoạch chờ duyệt.
 
@@ -88,6 +96,7 @@ Mở một yêu cầu đang ở "Lỗi" hoặc "Cần bạn xem" sẽ thấy kh�
 |---|---|
 | Giám đốc lập kế hoạch lỗi, hoặc lập xong mà không giao việc nào | Chạy lại lượt lập kế hoạch (tiếp phiên cũ, nâng model, hoặc từ đầu), kèm lời dặn. |
 | Có việc của team lỗi, cần xem hoặc bị dừng | Mở từng việc trong danh sách để cứu (làm tiếp, làm lại, nhận phần đã làm, lập kế hoạch lại...): yêu cầu được mở lại, các việc chờ nó chạy tiếp, ghép lại và chuyển Giám đốc. Hoặc **Bỏ phần lỗi, cho Giám đốc kiểm tra phần đã có**: ghép các việc đã xong, Giám đốc được báo rõ phần thiếu. |
+| Việc của team **chờ bạn quyết định** (việc nó phụ thuộc không xong) | Việc phụ thuộc không bị đánh lỗi dây chuyền nữa (nó chưa chạy lượt nào). Với từng việc như vậy có hai nút: **Chạy trên phần đã có** (gốc là phần đã duyệt của các việc nó chờ, còn lại là mã gốc của yêu cầu) hoặc **Hủy**. Cứu được việc gốc thì việc chờ tự chạy tiếp như cũ. |
 | Giám đốc kiểm tra mà không kết luận | Chạy lại lượt kiểm tra (như trên). |
 | Giám đốc đánh giá chưa đạt | **Vẫn nhận kết quả để duyệt**: chuyển sang chờ bạn duyệt kết quả như bình thường. |
 | Ghép kết quả các team bị xung đột | Chỉ giải thích và liệt kê file xung đột; hai team sửa trùng chỗ nên cần bạn gộp tay các nhánh `company/job…` trong dự án hoặc dừng yêu cầu. |
@@ -108,7 +117,8 @@ Ngoài hỏi Trưởng nhóm và đồng nghiệp, nhân viên có công cụ `a
 ## Cách hoạt động
 
 - Mỗi việc chạy trong **worktree và nhánh riêng** (`company/<tên>-task<số>`) đặt ở thư mục anh em `<tên-dự-án>-worktrees/`. Công cụ tự commit khi xong và **không bao giờ push**; việc gộp vào dự án chỉ xảy ra khi bạn bấm **Đưa vào dự án**. Xem kết quả bằng `git diff main company/<tên>-task<số>`.
-- Nhân viên chỉ chạy được các lệnh Bash nằm trong `allowed_commands` của hồ sơ dự án. Chưa có hồ sơ thì không chạy được lệnh nào.
+- Nhân viên chỉ chạy được các lệnh Bash nằm trong `allowed_commands` của hồ sơ dự án. Chưa có hồ sơ thì không chạy được lệnh nào. Ngoài danh sách, hook của công ty duyệt thêm ba thứ hay bị hỏi xin: **xóa file** trong thư mục làm việc (`rm`, chỉ trong thư mục của team hoặc thư mục nháp), **chạy `node <file trong thư mục làm việc>`** (không `-e`), và **lệnh ghép** bằng `&&`, `;`, `|` khi từng phần đều được phép. Lệnh đụng ra ngoài thư mục làm việc hay vào `.git` bị chặn kèm lý do để nhân viên khỏi thử lại tốn lượt.
+- Mỗi worktree có **thư mục nháp `.company-tmp/`**: nhân viên ghi file tạm, script thử, kết quả chạy vào đó thoải mái, không bị giới hạn thư mục của team, và không bao giờ được commit (có `.gitignore` tự loại trừ).
 - **Chặn cứng thư mục:** nhân viên chỉ sửa được trong thư mục của team khai ở `folders` của `local/project.md` (hook `server/path-guard.mjs`). Không ai đọc hay sửa được `.env`, `.git` hay file ngoài worktree. Hook gọi lệnh `node`, nên `node` phải có trong PATH (`npm run doctor` kiểm tra).
 
 ### Yêu cầu cho cả công ty
@@ -201,7 +211,7 @@ Nhân viên đang làm việc có bốn công cụ hỏi (qua MCP của công ty
 - **Giới hạn do máy chủ ép**: 2 lần hỏi mỗi việc (một cuộc họp tính một lần), 600 ký tự mỗi câu, chỉ hỏi người cùng team, không tự hỏi mình, khóa bí mật trong câu hỏi bị che. Mã thông báo của nhân viên chỉ gọi được ba công cụ hỏi, hết hiệu lực khi lượt chạy kết thúc.
 - Câu hỏi và trả lời hiện trong nhật ký hội thoại và trong lịch sử của việc; báo cáo tuần đếm lượt trả lời riêng, không lẫn vào lượt của Trưởng nhóm.
 
-Hồ sơ dự án có thể khai `worktree_links: [node_modules]` để nối thư mục phụ thuộc của dự án vào mỗi worktree (mặc định là `node_modules`, không bị commit).
+Hồ sơ dự án có thể khai `worktree_links: [node_modules]` để nối thư mục phụ thuộc của dự án vào mỗi worktree (mặc định là `node_modules`, không bị commit; trong đó chỉ đọc được, không sửa được), và `worktree_copies: [AGENTS.md]` để chép file bị gitignore mà nhân viên cần đọc vào worktree (không commit, không chép `.env*`).
 - **Độ khó tự động:** mặc định hệ thống tự đánh giá độ khó của việc (một lần gọi `haiku` nhỏ) rồi chọn model: Đơn giản dùng `haiku`, Bình thường theo vai trò, Khó dùng `opus`. Việc hết số lượt mà chưa xong thì tự nâng một bậc và làm tiếp. Bạn có thể ép một mức khi giao việc. Không có model `fable`.
 - Tối đa 6 agent chạy cùng lúc (`COMPANY_MAX_CONCURRENT`), mỗi nhân viên một việc một lúc.
 - **Hết hạn mức Pro:** việc đang dở được lưu, cả công ty nghỉ đến giờ hạn mức hồi (đọc từ sự kiện `rate_limit_event`), rồi tự làm tiếp bằng `--resume`. Không dùng API.
@@ -246,6 +256,29 @@ Nút **"Thông báo"** ở đầu trang (mỗi thiết bị bật riêng). Máy 
 - Đăng ký đẩy của thiết bị vào qua cổng từ xa gắn với phiên đăng nhập: đăng xuất, hết hạn hoặc đổi PIN thì thiết bị đó **thôi nhận** ngay; đăng nhập lại và mở trang là tự đăng ký lại. Thiết bị trên máy chính không phụ thuộc phiên.
 - Nội dung chỉ gồm tiêu đề ngắn (đã che bí mật) và được mã hóa đầu-cuối nên Google/Apple/Mozilla không đọc được. Máy chủ chỉ gửi tới các dịch vụ đẩy đã biết (FCM, Mozilla, Windows, Apple); dịch vụ khác thêm bằng `COMPANY_PUSH_HOSTS` (hiếm khi cần). Khóa VAPID tự tạo ở `data/vapid.json`; xóa tệp này thì mọi thiết bị phải bật lại.
 - Giới hạn: tối đa 20 thiết bị, tối đa 20 thông báo mỗi 10 phút.
+
+## Đặt my-company ở đâu
+
+Có hai cách đặt, và chúng khác nhau ở chỗ công cụ của dự án (typecheck, lint, test) có "nhìn thấy" my-company hay không.
+
+| Cách đặt | Ví dụ | Ghi chú |
+|---|---|---|
+| Ngang hàng với dự án (khuyến nghị cho dự án có tsconfig `include: ["**/*.ts"]`) | `D:\my-company` + `root: D:\du-an` trong `local/project.md` (hoặc `--project D:\du-an` mỗi lệnh) | Dự án không biết có my-company, không gì bị quét nhầm. Quên cả hai thì gốc thành `D:\` và `npm start` từ chối chạy |
+| Lồng trong dự án, tên có dấu chấm | `<dự án>\.my-company` | Mặc định của README. `tsc` bỏ qua thư mục ẩn khi gặp `**`; `eslint`/test thì tùy cấu hình |
+| Lồng trong dự án, tên không có dấu chấm | `<dự án>\my-company` | Dễ bị quét nhầm: phải thêm `my-company` vào exclude/ignore của dự án |
+
+Khi bị quét nhầm, `npx tsc --noEmit` của dự án chủ đỏ cả trăm lỗi (đã gặp ~220 lỗi trên một dự án Next.js), toàn bộ nằm trong my-company, trong khi `tsc` chạy ngay trong thư mục my-company thì sạch. Nguyên nhân:
+
+1. Alias `@/*` trỏ `./src/*` được tính từ tsconfig đang dùng, nên `@/lib/types` rơi vào `<dự án>/src/lib/types` (không có). Đây là nguyên nhân chính; các lỗi `implicit any` đi kèm chỉ là hệ quả.
+2. tsconfig của dự án chủ không loại `data/`, mà `data/runs/<N>/` từng chứa một bản chép gói skill với file `.ts` ví dụ có import hỏng (nay được dọn sau mỗi lần chạy, xem dưới).
+3. Hai bên bật `allowImportingTsExtensions` khác nhau.
+4. my-company là repo git riêng bị giấu bằng `.git/info/exclude`, nên CI của dự án chủ (clone sạch) vẫn xanh còn máy dev thì đỏ, dễ bị hiểu nhầm là dự án hỏng.
+
+Cách xử lý:
+
+- `npm run init` và `npm run doctor` tìm `tsconfig.json`, `eslint.config.*`/`.eslintrc*`, `jest|vitest.config.*` ở các thư mục cha. Với tsconfig, công cụ đọc `include`/`exclude` (kể cả qua `extends` tương đối) rồi nói chắc chắn có quét nhầm hay không và in đúng dòng cần thêm. Với eslint và test runner chỉ đoán (file cấu hình không nhắc tên thư mục my-company), và ghi rõ là chưa kiểm chứng. Công cụ **chỉ đọc**, không sửa file của dự án chủ.
+- Kiểm tay: `npx tsc --noEmit` ở dự án chủ, mọi dòng lỗi bắt đầu bằng `my-company/` là bị quét nhầm.
+- `data/runs/<N>/plugin` (bản chép gói skill, mỗi run một bản, từng chiếm ~14 MB sau 64 run) bị xóa khi run kết thúc và khi máy chủ khởi động. Lần chạy sau tự dựng lại từ thư viện skill đã duyệt, nên không mất gì. Các file khác của run (`system.md`, `settings.json`, `mcp.json`) giữ nguyên.
 
 ## Cấu hình
 

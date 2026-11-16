@@ -20,6 +20,20 @@ export interface WorkItem {
   at: number;
   /** Việc con nằm trong một việc lớn/yêu cầu (chỉ có ở thẻ "cần bạn"): mã cha để hiện "thuộc việc lớn #..". */
   parent: { kind: 'epic' | 'job'; id: number } | null;
+  /** Ghi chú ngắn trên thẻ, ví dụ việc lỗi còn bài dở: "còn bài dở, 3 file". */
+  note?: string;
+}
+
+/** Việc lỗi mà nhánh đã có file thay đổi: nói ngay trên thẻ để bạn biết có thứ để cứu, không phải đọc nhật ký. */
+export function draftNote(task: Pick<Task, 'status' | 'changed_files'>): string | undefined {
+  if (task.status !== 'failed' || !task.changed_files) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(task.changed_files);
+    const n = Array.isArray(parsed) ? parsed.length : 0;
+    return n > 0 ? `còn bài dở, ${n} file` : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface WorkSection {
@@ -69,6 +83,7 @@ const JOB_LANE: Record<JobStatus, Lane> = {
   awaiting_choice: { tab: 'need', section: 'approve' },
   attention: { tab: 'need', section: 'failed' },
   failed: { tab: 'need', section: 'failed' },
+  blocked: { tab: 'need', section: 'failed' },
   planning: { tab: 'active', section: 'working' },
   running: { tab: 'active', section: 'working' },
   integrating: { tab: 'active', section: 'working' },
@@ -166,7 +181,7 @@ export function groupWork({
       const t = taskById.get(ref.id);
       if (t) {
         const parent = t.job_id !== null ? { kind: 'job' as const, id: t.job_id } : t.epic_id !== null ? { kind: 'epic' as const, id: t.epic_id } : null;
-        item = { kind: 'task', id: t.id, title: t.title, status: ref.status === 'asking' ? 'asking' : t.status, who: t.member, at: t.finished_at ?? t.created_at, parent };
+        item = { kind: 'task', id: t.id, title: t.title, status: ref.status === 'asking' ? 'asking' : t.status, who: t.member, at: t.finished_at ?? t.created_at, parent, note: draftNote(t) };
       }
     }
     if (!item || needKeys.has(key(item.kind, item.id))) continue;
@@ -192,7 +207,7 @@ export function groupWork({
   }
   for (const t of tasks) {
     if (t.job_id !== null || t.epic_id !== null) continue;
-    place({ kind: 'task', id: t.id, title: t.title, status: t.status, who: t.member, at: t.finished_at ?? t.created_at, parent: null }, TASK_LANE[t.status] ?? { tab: 'active', section: 'working' }, t.finished_at);
+    place({ kind: 'task', id: t.id, title: t.title, status: t.status, who: t.member, at: t.finished_at ?? t.created_at, parent: null, note: draftNote(t) }, TASK_LANE[t.status] ?? { tab: 'active', section: 'working' }, t.finished_at);
   }
 
   const tabs = {} as Record<WorkTab, WorkSection[]>;

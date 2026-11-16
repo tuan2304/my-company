@@ -3,8 +3,8 @@ title: Kiểm thử viên (QA)
 model: sonnet
 effort: medium
 tools: [Read, Grep, Glob, Edit, Write, Bash]
-max_turns: 30
-timeout_minutes: 20
+max_turns: 60
+timeout_minutes: 40
 # Theo quyết định của chủ công ty (7/11/2026), QA nạp cả ba skill sau dù chúng rộng quyền hơn các skill khác:
 # - `agent-desktop`, `agent-desktop-windows`: hướng dẫn một chương trình dòng lệnh bên ngoài điều khiển giao diện máy tính thật
 #   (nhấp, gõ phím, đọc cửa sổ của mọi ứng dụng đang mở).

@@ -73,8 +73,9 @@ export default function JobDetail({ job, tasks, selectedTaskId, onSelectTask, on
         </p>
       )}
       {job.contest && (job.status === 'awaiting_choice' || job.status === 'done') && <ContestPanel key={`${job.id}:${job.status}`} jobId={job.id} />}
-      {job.status === 'done' && job.epic_id === null && !job.contest && (
-        <IntegratePanel key={`${job.id}:${job.finished_at ?? 0}`} kind="job" id={job.id} />
+      {(job.status === 'done' || job.status === 'attention') && !!job.merge_branch && !job.contest && (
+        // Việc lớn trong một yêu cầu: máy chủ chỉ cho đưa riêng khi yêu cầu đã đóng; chưa đủ điều kiện thì khối này tự ẩn.
+        <IntegratePanel key={`${job.id}:${job.status}:${job.finished_at ?? 0}`} kind="job" id={job.id} />
       )}
       {active && <button type="button" className="danger" onClick={() => onStop(job.id)}>Dừng cả việc lớn</button>}
 

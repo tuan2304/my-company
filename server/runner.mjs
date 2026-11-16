@@ -16,7 +16,9 @@ import { composeSkillPack } from './skills.mjs';
 import { knownFailuresLine } from './project.mjs';
 import { findMember } from './teams.mjs';
 import { nextTier, triageTask } from './triage.mjs';
-import { checkRepo, commitWorktree, createWorktree } from './worktree.mjs';
+import { checkRepo, commitWorktree, createWorktree, ensureScratchDir, git, gitResult, linkedDirs } from './worktree.mjs';
+import { SCRATCH_DIR } from './path-guard.mjs';
+import { renderFileMap } from './file-map.mjs';
 
 export { UserError };
 // Tham số dòng lệnh là việc của engine; giữ các tên cũ ở đây để mã và test hiện có vẫn import được từ runner.
@@ -95,7 +97,8 @@ export function buildSystemPrompt({ member, team, role, project, canAsk = false,
       '## Quy tắc bắt buộc',
       '- Bạn làm việc trong một nhánh git riêng ở thư mục hiện tại. Không push, không đổi nhánh, không thêm hay sửa remote.',
       '- Chỉ làm đúng phạm vi việc được giao. Không đọc, không in nội dung file .env, khóa bí mật hay khóa service_role.',
-      '- Chỉ chạy các lệnh đã được cho phép. Nếu một lệnh bị từ chối thì không tìm cách lách, hãy báo lại trong phần "Điều còn dang dở".',
+      '- Chỉ chạy các lệnh đã được cho phép. Lệnh ghép bằng && được duyệt khi từng phần đều được phép. Nếu một lệnh bị từ chối thì không tìm cách lách và không hỏi xin, hãy báo lại trong phần "Điều còn dang dở".',
+      `- Thư mục nháp ${SCRATCH_DIR}/ ở gốc thư mục làm việc: ghi file tạm, script thử, kết quả chạy vào đó thoải mái (không bị giới hạn thư mục, không được commit). Được xóa file trong thư mục làm việc bằng rm và chạy "node <file trong thư mục làm việc>".`,
       '- Không tự commit: hệ thống sẽ commit thay đổi của bạn khi bạn xong.',
       canAsk
         ? '- Không có người trực tiếp ngồi cạnh bạn. Thiếu thông tin nhỏ thì chọn phương án hợp lý nhất, tiếp tục làm và ghi giả định vào "Điều còn dang dở". ' +
@@ -131,20 +134,46 @@ export function buildTaskPrompt(task) {
   return lines.join('\n');
 }
 
-export function guardEnv({ root, allow, mode }) {
+export function guardEnv({ root, allow, mode, links = [], commands = [] }) {
   return {
     COMPANY_GUARD_ROOT: root,
     COMPANY_GUARD_ALLOW: JSON.stringify(allow ?? []),
     COMPANY_GUARD_MODE: mode,
+    COMPANY_GUARD_LINKS: JSON.stringify(links ?? []),
+    COMPANY_GUARD_COMMANDS: JSON.stringify(commands ?? []),
   };
 }
 
+// Phần mở rộng tên file thường gặp, để nhận ra tên file trong mục "File thay đổi" của báo cáo.
+const FILE_EXT = /\.(?:[cm]?[jt]sx?|json|md|mdx|css|scss|sass|less|html?|vue|svelte|astro|sql|prisma|py|rb|go|rs|java|kt|php|cs|yml|yaml|toml|ini|txt|csv|xml|svg|png|jpe?g|gif|webp|sh|ps1|bat|lock|graphql|proto)$/i;
+
 /**
- * Hệ số kéo dài số lượt và thời gian cho một lượt đã được nâng bậc hoặc được chủ cho chạy lại (phiên cũ đã dùng hết phần ban đầu):
- * mỗi lần thêm một nửa, tối đa gấp ba.
+ * Tên file mà nhân viên khai trong mục "File thay đổi" của báo cáo. Dùng để bắt lỗi "báo có file mà nhánh trống"
+ * (file ghi ngoài worktree, bị gitignore, hay mất commit). Không có mục đó hoặc mục nói "không có" thì trả về [].
+ */
+export function claimedChangedFiles(text) {
+  const lines = String(text ?? '').split('\n');
+  const head = /^\s*(?:[#*\d.)\-\s]*)file thay đổi\b/i;
+  const other = /^\s*(?:[#*\d.)\-\s]*)(?:đã làm|cách kiểm tra|điều còn dang dở)\b/i;
+  const start = lines.findIndex((l) => head.test(l));
+  if (start < 0) return [];
+  const body = [lines[start].replace(head, '')];
+  for (let i = start + 1; i < lines.length && !other.test(lines[i]); i += 1) body.push(lines[i]);
+  const found = new Set();
+  for (const token of body.join(' ').split(/[\s,;()`'"*]+/)) {
+    const clean = token.replace(/^[-+•·]+|[.,;:]+$/g, '').replace(/\\/g, '/');
+    if (!clean || clean.startsWith('http') || /^[\d.]+$/.test(clean)) continue;
+    if (clean.includes('/') ? /^[\w@.\-\[\]]+(?:\/[\w@.\-\[\]]+)+$/.test(clean) : FILE_EXT.test(clean)) found.add(clean);
+  }
+  return [...found];
+}
+
+/**
+ * Hệ số kéo dài số lượt và thời gian cho một lượt đã được nâng bậc, được hệ thống tự cho làm tiếp, hoặc được chủ cho chạy lại
+ * (phiên cũ đã dùng hết phần ban đầu): mỗi lần thêm một nửa, tối đa gấp ba.
  */
 export function stretchOf(task) {
-  return Math.min(1 + 0.5 * ((task.escalations > 0 ? 1 : 0) + task.recoveries), 3);
+  return Math.min(1 + 0.5 * ((task.escalations > 0 ? 1 : 0) + task.recoveries + (task.auto_continues ?? 0)), 3);
 }
 
 function killTree(child) {
@@ -226,6 +255,7 @@ export class Runner extends EventEmitter {
   }
 
   start() {
+    this.pruneStalePluginCopies();
     this.recover();
     this.schedule();
   }
@@ -667,11 +697,22 @@ export class Runner extends EventEmitter {
         member: member.name,
         taskId: task.id,
         links: project?.worktreeLinks,
+        copies: project?.worktreeCopies,
         baseCommit: task.job_id ? this.store.getJob(task.job_id)?.base_commit ?? undefined : undefined,
       });
       task = this.update(task.id, { worktree: wt.dir, branch: wt.branch, base_commit: wt.baseCommit });
-      this.log(task.id, 'system', `Tạo nhánh riêng ${wt.branch} tại ${wt.dir}${wt.linked.length ? ` (nối ${wt.linked.join(', ')} từ dự án)` : ''}`);
+      const extras = [
+        ...(wt.linked.length ? [`nối ${wt.linked.join(', ')}`] : []),
+        ...(wt.copied.length ? [`chép ${wt.copied.join(', ')}`] : []),
+      ];
+      this.log(task.id, 'system', `Tạo nhánh riêng ${wt.branch} tại ${wt.dir}${extras.length ? ` (${extras.join('; ')} từ dự án)` : ''}`);
+    } else if (fs.existsSync(task.worktree)) {
+      ensureScratchDir(task.worktree); // worktree từ trước khi có thư mục nháp (làm tiếp, giao lại)
     }
+    // Thư mục nối từ dự án (node_modules): hook chỉ cho đọc trong đó; Claude Code cần biết đích thật để không tự chặn đọc/ls.
+    const linked = linkedDirs({ worktree: task.worktree, names: project?.worktreeLinks });
+    const links = linked.map((l) => l.name);
+    const addDirs = linked.map((l) => l.real);
 
     // Công cụ hỏi người khác (qua MCP). Không có địa chỉ API (chạy ngoài máy chủ) thì nhân viên làm việc như cũ, không hỏi được.
     const canAsk = Boolean(this.apiUrl) && state.engine.capabilities.mcp;
@@ -719,12 +760,17 @@ export class Runner extends EventEmitter {
     fs.writeFileSync(systemFile, buildSystemPrompt({ member, team, role, project, canAsk, skills: pack.loaded, skillMode: state.engine.skillMode }), 'utf8');
 
     const args = state.engine.taskArgs({
-      task, role: runRole, project, systemFile, pluginDir: pack.dir, resume, settingsFile, mcpConfigFile, mcpTools: askTools,
+      task, role: runRole, project, systemFile, pluginDir: pack.dir, resume, settingsFile, mcpConfigFile, mcpTools: askTools, addDirs,
     });
     const feedback = task.review_feedback?.trim();
     let prompt;
     if (feedback && resume) {
       prompt = `Trưởng nhóm đã xem bài nộp của bạn và trả lại để sửa. Nhận xét:\n\n${feedback}\n\nHãy sửa đúng các điểm này, chạy lại test và lint, rồi báo cáo lại theo đúng bốn mục (Đã làm / File thay đổi / Cách kiểm tra / Điều còn dang dở).`;
+    } else if (resume && task.auto_continues > 0) {
+      // Hệ thống tự cho làm tiếp sau khi hết lượt/quá giờ: lần này phải ra bài, không đọc dò thêm.
+      prompt = 'Lần chạy trước của bạn bị dừng vì hết số lượt hoặc quá giờ khi chưa nộp bài. Phần đã làm vẫn nằm trong thư mục làm việc (đã được lưu tạm). '
+        + 'Hãy ưu tiên HOÀN THÀNH và NỘP BÀI trong lượt này: không đọc thêm file không cần thiết, không làm lại từ đầu, không mở rộng phạm vi. '
+        + 'Nếu còn phần không kịp làm, vẫn báo cáo theo đúng bốn mục (Đã làm / File thay đổi / Cách kiểm tra / Điều còn dang dở) và ghi rõ phần thiếu.';
     } else if (resume) {
       prompt = 'Hãy tiếp tục công việc đang làm dở và hoàn thành nó theo đúng yêu cầu ban đầu.';
     } else if (feedback) {
@@ -733,6 +779,19 @@ export class Runner extends EventEmitter {
       prompt = buildTaskPrompt(task);
     }
     if (feedback) this.update(task.id, { review_feedback: null });
+    // Bản đồ file trong phạm vi (phạm vi việc con nếu có, không thì thư mục của team): đọc đúng file, không dò đường.
+    if (!resume) {
+      let scopes = [];
+      try {
+        const parsed = JSON.parse(task.files ?? '[]');
+        scopes = Array.isArray(parsed) ? parsed.map(String) : [];
+      } catch {
+        scopes = [];
+      }
+      if (scopes.length === 0) scopes = allow;
+      const map = scopes.length ? renderFileMap({ root: task.worktree, scopes }) : '';
+      if (map) prompt = `${prompt}\n\n${map}`;
+    }
     if (switched && task.worktree) {
       const from = this.engines.find((e) => e.id === previous)?.label ?? previous;
       prompt = `${prompt}
@@ -747,6 +806,12 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
       prompt = `${prompt}\n\n## Lời dặn của chủ công ty (lần làm trước của việc này bị dừng vì lỗi, hãy làm theo lời dặn)\n${guidance}`;
       this.update(task.id, { owner_guidance: null });
     }
+    // Ghi chú của hệ thống (ví dụ việc được tự giao lại sau khi lần trước lỗi): nói rõ chuyện gì đã xảy ra để người nhận không lặp lại.
+    const systemNote = task.system_note?.trim();
+    if (systemNote) {
+      prompt = `${prompt}\n\n## Ghi chú của hệ thống về lần làm trước\n${systemNote}`;
+      this.update(task.id, { system_note: null });
+    }
 
     if (this.abortIfStopped(task.id, state)) return undefined;
     // Câu trả lời cho câu hỏi đã gửi (nếu có) đi kèm lời nhắc. Chỉ đánh dấu "đã giao" sau khi chắc chắn sắp chạy.
@@ -757,16 +822,16 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
     }
     this.log(task.id, 'system', feedback ? `Làm lại theo nhận xét của Trưởng nhóm (lần ${task.revisions}).` : resume ? 'Làm tiếp phiên trước (--resume).' : 'Bắt đầu làm việc.');
     // Engine không có cờ dòng lệnh cho hook chặn file, skill, lời nhắc hệ thống... thì tự đặt chúng vào thư mục làm việc (prepare).
+    const commands = role.tools.includes('Bash') ? project?.allowedCommands ?? [] : [];
     const prepared = state.engine.prepare?.({
-      cwd: task.worktree, runDir, readonly: false, guardMode, root: task.worktree, allow, prompt,
-      commands: role.tools.includes('Bash') ? project?.allowedCommands ?? [] : [],
+      cwd: task.worktree, runDir, readonly: false, guardMode, root: task.worktree, allow, links, prompt, commands,
       systemText: fs.readFileSync(systemFile, 'utf8'), skillsDir: pack.dir,
     });
     this.track(task, state, {
       cwd: prepared?.cwd ?? task.worktree,
       args: [...args, ...(prepared?.args ?? [])],
       prompt: prepared ? '' : prompt,
-      env: { ...state.engine.env(), ...guardEnv({ root: task.worktree, allow, mode: guardMode }) },
+      env: { ...state.engine.env(), ...guardEnv({ root: task.worktree, allow, mode: guardMode, links, commands }) },
       timeoutMinutes: runRole.timeout_minutes,
       maxTurns: state.engine.capabilities.maxTurns ? null : runRole.max_turns,
     });
@@ -958,8 +1023,32 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
       state.closed = true;
       this.finalize(task.id, state, code, signal)
         .catch((err) => this.fail(task.id, `Lỗi khi kết thúc việc: ${err.message}`))
-        .finally(() => state.resolveExit());
+        .finally(() => {
+          this.removePluginCopy(task.id);
+          state.resolveExit();
+        });
     });
+  }
+
+  /**
+   * Bản chép gói skill của một lần chạy (data/runs/<N>/plugin) chỉ cần lúc tiến trình đang chạy: lần sau launch dựng lại từ đầu.
+   * Giữ lại thì mỗi run để lại cả file .ts ví dụ của skill (nhân lên hàng chục MB, và tsc của dự án chủ quét nhầm).
+   */
+  removePluginCopy(taskId) {
+    try {
+      fs.rmSync(path.join(this.cfg.dataDir, 'runs', String(taskId), 'plugin'), { recursive: true, force: true });
+    } catch {
+      /* không xóa được (file đang bị giữ): bản sao chỉ là rác, lần khởi động sau sẽ dọn tiếp */
+    }
+  }
+
+  /** Lúc khởi động chưa có tiến trình nào chạy, nên mọi bản chép gói skill còn sót từ trước đều là rác. */
+  pruneStalePluginCopies() {
+    const runsDir = path.join(this.cfg.dataDir, 'runs');
+    let ids = [];
+    try { ids = fs.readdirSync(runsDir); } catch { return 0; }
+    for (const id of ids) this.removePluginCopy(id);
+    return ids.length;
   }
 
   /**
@@ -1145,11 +1234,26 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
         const committed = await commitWorktree({
           dir: task.worktree,
           message: `company: ${task.title}\n\nViệc #${task.id} do ${task.member} (${task.role}) làm.`,
-          exclude: [...(project?.worktreeLinks ?? []), ...state.engine.workspaceExcludes],
+          exclude: [...(project?.worktreeLinks ?? []), ...(project?.worktreeCopies ?? []), ...state.engine.workspaceExcludes],
         });
         changedFiles = committed.changedFiles;
       } catch (err) {
         this.log(taskId, 'warn', `Không commit được thay đổi: ${err.message}`);
+      }
+      // Lưới an toàn: báo cáo khai có file thay đổi mà nhánh không ghi nhận gì (ghi ngoài worktree, bị gitignore, mất commit...).
+      // Không đưa bài rỗng cho Trưởng nhóm duyệt (họ dễ tin báo cáo mà duyệt), đánh lỗi để chủ thấy ngay.
+      // (commitWorktree chỉ liệt kê file của commit vừa tạo: bài sửa lại sau khi bị trả có thể không đổi thêm file nào, nên phải so cả nhánh với mã gốc.)
+      const claimed = changedFiles.length === 0 && (await this.branchEmpty(task)) ? claimedChangedFiles(res.result) : [];
+      if (claimed.length > 0) {
+        const reason = `Nhân viên báo đã sửa ${claimed.length} file (${claimed.slice(0, 5).join(', ')}${claimed.length > 5 ? ', ...' : ''}) nhưng nhánh không ghi nhận thay đổi nào. Có thể file được ghi ngoài thư mục làm việc, bị .gitignore bỏ qua, hoặc bị xóa lại trước khi nộp. Bài không được đưa cho Trưởng nhóm duyệt.`;
+        this.update(taskId, {
+          ...totals, status: 'failed', failure_code: 'no_changes', error: maskSecrets(reason), result: maskSecrets(String(res.result ?? '')),
+          changed_files: '[]', turns: res.num_turns ?? task.turns, finished_at: now,
+        });
+        this.log(taskId, 'error', reason);
+        if (!this.stopped) await this.notifyJobs(taskId);
+        this.schedule();
+        return;
       }
       // Việc con của một việc lớn không "xong" ngay: phải nộp bài và chờ Trưởng nhóm duyệt.
       const submitted = Boolean(task.job_id);
@@ -1160,6 +1264,7 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
         changed_files: JSON.stringify(changedFiles),
         turns: res.num_turns ?? task.turns,
         error: null,
+        partial: 0,
         finished_at: now,
       });
       this.log(taskId, 'done', submitted ? `Đã nộp bài (${changedFiles.length} file thay đổi), chờ Trưởng nhóm duyệt.` : `Xong. ${changedFiles.length} file thay đổi.`);
@@ -1195,17 +1300,38 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
         this.schedule();
         return;
       }
+      // Hết lượt hoặc quá giờ mà chưa nộp bài: thường chỉ thiếu đoạn cuối (hai việc lỗi đầu tiên trên web96 đều đã viết xong phần chính
+      // ở lượt 31/30). Lưu tạm phần đã làm rồi tự cho làm tiếp đúng phiên cũ MỘT lần, có thêm lượt và lời nhắc ưu tiên nộp bài.
+      const unfinished = failureCode === 'max_turns' || failureCode === 'timeout';
+      if (this.canAutoContinue(task, failureCode, leadRun)) {
+        await this.saveDraft(task, project, state);
+        this.update(taskId, { ...totals, status: 'queued', auto_continues: task.auto_continues + 1, turns: res?.num_turns ?? task.turns });
+        this.log(taskId, 'warn', `${reason} Tự cho làm tiếp một lần (phiên cũ, thêm lượt). Vẫn chưa xong thì phần đã làm sẽ được nộp cho Trưởng nhóm quyết định.`);
+        if (!this.stopped) await this.notifyJobs(taskId);
+        this.schedule();
+        return;
+      }
       let changedFiles = [];
-      if (!leadRun) {
-        try {
-          changedFiles = (await commitWorktree({
-            dir: task.worktree,
-            message: `company (chưa xong): ${task.title}\n\nViệc #${task.id}`,
-            exclude: [...(project?.worktreeLinks ?? []), ...state.engine.workspaceExcludes],
-          })).changedFiles;
-        } catch {
-          /* giữ nguyên worktree để người dùng xem */
-        }
+      if (!leadRun) changedFiles = await this.saveDraft(task, project, state);
+      // Việc con của việc lớn hết lượt/quá giờ lần nữa nhưng đã có file thay đổi: nộp phần đã làm cho Trưởng nhóm quyết (duyệt,
+      // hay trả lại kèm nhận xét để làm tiếp), thay vì đánh lỗi và bỏ phí công đã bỏ ra.
+      if (!leadRun && unfinished && task.job_id && changedFiles.length > 0) {
+        const last = maskSecrets(shorten(String(res?.result ?? ''), 2000)).trim();
+        this.update(taskId, {
+          ...totals,
+          status: 'submitted',
+          partial: 1,
+          failure_code: failureCode,
+          error: null,
+          result: `(BÀI NỘP CHƯA XONG. ${reason.trim()} Nhân viên đã được cho làm tiếp ${task.auto_continues} lần. Phần đã làm nằm trên nhánh; Trưởng nhóm quyết định.)\n\nLời cuối của nhân viên:\n${last || '(không có)'}`,
+          changed_files: JSON.stringify(changedFiles),
+          turns: res?.num_turns ?? task.turns,
+          finished_at: now,
+        });
+        this.log(taskId, 'warn', `${reason} Đã nộp phần đã làm (${changedFiles.length} file) để Trưởng nhóm quyết định.`);
+        if (!this.stopped) await this.notifyJobs(taskId);
+        this.schedule();
+        return;
       }
       this.update(taskId, {
         ...totals,
@@ -1222,8 +1348,48 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
     this.schedule();
   }
 
+  /** Nhánh của việc có khác mã gốc không. Không có mã gốc hay không kiểm được thì coi như có (không đánh lỗi oan). */
+  async branchEmpty(task) {
+    if (!task.base_commit || !task.worktree) return false;
+    const diff = await gitResult(task.worktree, ['diff', '--quiet', `${task.base_commit}..HEAD`]);
+    return diff.code === 0;
+  }
+
   canAutoRetry(task, failureCode, leadRun) {
     return !leadRun && failureCode === 'crash' && task.auto_retries < 1 && Boolean(task.session_id) && Boolean(task.worktree) && fs.existsSync(task.worktree);
+  }
+
+  /** Hết lượt hoặc quá giờ: tự cho làm tiếp đúng phiên cũ một lần (xem finalize). Cần còn phiên và thư mục làm việc. */
+  canAutoContinue(task, failureCode, leadRun) {
+    return !leadRun && (failureCode === 'max_turns' || failureCode === 'timeout') && task.auto_continues < 1
+      && Boolean(task.session_id) && Boolean(task.worktree) && fs.existsSync(task.worktree);
+  }
+
+  /**
+   * Lưu tạm phần nhân viên đã làm (commit "chưa xong") để không mất khi lần chạy sau hỏng. Trả về danh sách file đã đổi so với
+   * mã gốc của việc (gộp mọi lần lưu tạm), không chỉ của lần commit này. Lỗi git thì giữ nguyên worktree để người dùng xem.
+   */
+  async saveDraft(task, project, state) {
+    if (!task.worktree) return [];
+    let files = [];
+    try {
+      files = (await commitWorktree({
+        dir: task.worktree,
+        message: `company (chưa xong): ${task.title}\n\nViệc #${task.id}`,
+        exclude: [...(project?.worktreeLinks ?? []), ...(project?.worktreeCopies ?? []), ...state.engine.workspaceExcludes],
+      })).changedFiles;
+    } catch (err) {
+      this.log(task.id, 'warn', `Không lưu tạm được phần đã làm: ${err.message}`);
+    }
+    if (task.base_commit) {
+      try {
+        const since = await git(task.worktree, ['diff', '--name-only', `${task.base_commit}..HEAD`]);
+        files = [...new Set([...files, ...since.split('\n').map((s) => s.trim()).filter(Boolean)])];
+      } catch {
+        /* không đọc được: dùng danh sách của lần commit này */
+      }
+    }
+    return files;
   }
 
   /**

@@ -5,15 +5,17 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { promisify } from 'node:util';
 import { clearPin, hasPin, MIN_PIN_LENGTH, pinProblem, setPin } from '../server/auth.mjs';
-import { ensureDirs, loadConfig, TOOL_DIR } from '../server/config.mjs';
+import { describeProjectRootSource, ensureDirs, loadConfig, TOOL_DIR } from '../server/config.mjs';
 import { runBaseline, renderKnownFailures } from '../server/baseline.mjs';
 import { runDoctor } from '../server/doctor.mjs';
+import { findHostProject, findHostScanProblems } from '../server/host-scan.mjs';
 import { detectStack, loadProject, renderProjectDraft } from '../server/project.mjs';
 import { startServer } from '../server/index.mjs';
 import {
   describeRoleSkills, fetchToQuarantine, inspectSkillDir, installSkill, parseSource, readLock, verifyLibrary,
 } from '../server/skills.mjs';
 import { loadTeams } from '../server/teams.mjs';
+import { checkRepo } from '../server/worktree.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -122,14 +124,29 @@ async function cmdInit(cfg) {
     console.log('- Công cụ nằm ngoài dự án nên không cần ẩn khỏi git.');
   }
 
+  // 1b. Cài lồng trong một dự án khác: công cụ của dự án đó (tsc, eslint, test) có thể quét nhầm. Chỉ cảnh báo, không sửa file của dự án chủ.
+  const host = findHostProject(TOOL_DIR);
+  if (host) {
+    console.log(`\n! my-company đang nằm bên trong một dự án khác (${host}); công cụ của dự án đó có thể quét nhầm code của my-company.`);
+    console.log('  Hai cách tránh: (a) khuyến nghị: đặt my-company ở thư mục NGANG HÀNG với dự án, rồi chạy kèm --project <thư mục dự án>;');
+    console.log('  (b) thêm tên thư mục này vào exclude/ignore của dự án chủ (tsconfig "exclude", eslint "ignores", test "exclude").');
+    const problems = findHostScanProblems(TOOL_DIR);
+    for (const p of problems) console.log(`  - ${p.problem}\n    Cách sửa: ${p.fix}`);
+    if (!problems.length) console.log('  Hiện chưa thấy cấu hình nào của dự án chủ quét nhầm. "npm run doctor" sẽ kiểm tra lại bất cứ lúc nào.');
+    console.log('');
+  }
+
   // 2. Hồ sơ dự án nháp (không bao giờ ghi đè).
   const profile = path.join(cfg.localDir, 'project.md');
   if (fs.existsSync(profile)) {
     console.log(`- Hồ sơ dự án đã có: ${profile}`);
   } else {
     const { stack, commands, skipped } = detectStack(cfg.projectRoot);
-    fs.writeFileSync(profile, renderProjectDraft({ name: cfg.projectName, stack, commands, skipped }), 'utf8');
+    // Công cụ nằm ngoài dự án (chạy kèm --project / COMPANY_PROJECT_ROOT): ghi gốc vào hồ sơ để các lần sau "npm start" là đủ.
+    const root = cfg.projectRootSource === 'parent' ? null : cfg.projectRoot;
+    fs.writeFileSync(profile, renderProjectDraft({ name: cfg.projectName, stack, commands, skipped, root }), 'utf8');
     console.log(`- Đã tạo hồ sơ nháp: ${profile}`);
+    if (root) console.log(`  Đã ghi root: ${root} vào hồ sơ, từ giờ không cần --project nữa.`);
     console.log(`  Phát hiện công nghệ: ${stack.join(', ') || '(chưa nhận ra)'}`);
     console.log('  Hãy mở file này, kiểm tra và sửa. Hồ sơ quyết định thư mục và lệnh nào agent được phép.');
   }
@@ -149,12 +166,35 @@ async function ensureBuilt() {
   });
 }
 
+/**
+ * Không cho máy chủ chạy khi gốc dự án sai (ví dụ quên --project nên gốc thành D:\): mọi việc giao ra sẽ chết ở lượt 0
+ * với "không phải là git repo", người dùng chỉ thấy nhân viên báo lỗi mà không biết vì sao.
+ */
+async function projectRootProblem(cfg) {
+  try {
+    await checkRepo(cfg.projectRoot);
+    return null;
+  } catch (err) {
+    return [
+      `Không khởi động: gốc dự án ${cfg.projectRoot} (${describeProjectRootSource(cfg.projectRootSource)}) chưa dùng được.`,
+      err.message,
+      'Chỉ đúng dự án bằng một trong ba cách: ghi "root: <thư mục dự án>" vào phần đầu local/project.md (một lần, khuyến nghị),',
+      'chạy kèm --project <thư mục dự án>, hoặc đặt biến COMPANY_PROJECT_ROOT.',
+    ].join('\n');
+  }
+}
+
 async function cmdStart(cfg, flags) {
+  const problem = await projectRootProblem(cfg);
+  if (problem) {
+    console.error(problem);
+    return 1;
+  }
   const dev = Boolean(flags.dev);
   if (!dev) await ensureBuilt();
   const app = await startServer({ cfg, dev });
   console.log(`\nCông ty đang chạy: ${app.url}`);
-  console.log(`Dự án: ${cfg.projectRoot}`);
+  console.log(`Dự án: ${cfg.projectRoot} (${describeProjectRootSource(cfg.projectRootSource)})`);
   if (app.remotePort) {
     const pinNote = hasPin(cfg.dataDir) ? 'cần PIN' : 'CHƯA đặt PIN, chạy "npm run pin -- set"';
     console.log(`Từ xa: https://${cfg.publicHost} qua cổng ${app.remotePort} (${pinNote})`);

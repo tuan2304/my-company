@@ -5,10 +5,10 @@ import test from 'node:test';
 import { openDb } from '../server/db.mjs';
 import { ensureDirs } from '../server/config.mjs';
 import { loadProject } from '../server/project.mjs';
-import { buildAllowedTools, buildClaudeArgs, buildSystemPrompt, Runner, UserError } from '../server/runner.mjs';
+import { buildAllowedTools, buildClaudeArgs, buildSystemPrompt, claimedChangedFiles, guardEnv, Runner, UserError } from '../server/runner.mjs';
 import { loadTeams, findMember } from '../server/teams.mjs';
 import { nextTier, parseTriage } from '../server/triage.mjs';
-import { commitWorktree, parsePorcelainZ, safeName } from '../server/worktree.mjs';
+import { commitWorktree, createWorktree, parsePorcelainZ, safeName } from '../server/worktree.mjs';
 import { git, makeProject, removeDir, testConfig, tmpDir, waitFor, REPO } from './helpers.mjs';
 
 async function setup(overrides = {}, env = {}) {
@@ -75,16 +75,50 @@ test('việc thành công: có nhánh riêng, commit, kết quả, mức dùng, 
     // Gói skill thật của vai trò Backend được ghép cho dự án "Node": không có skill theo công nghệ Supabase.
     const pluginDir = flag('--plugin-dir');
     assert.equal(flag('--tools').split(',').at(-1), 'Skill');
-    const loaded = fs.readdirSync(path.join(pluginDir, 'skills')).sort();
-    assert.deepEqual(loaded, ['ponytail', 'sharp-edges', 'systematic-debugging', 'test-driven-development', 'verification-before-completion']);
-    assert.ok(fs.existsSync(path.join(pluginDir, '.claude-plugin', 'plugin.json')));
-    assert.ok(ctx.store.listEvents(task.id).some((e) => e.kind === 'system' && /Skill nạp: .*ponytail/.test(e.summary)));
+    // Thư mục plugin chỉ cần lúc tiến trình chạy: xong việc là bị dọn (không để mỗi run một bản chép của cả gói skill).
+    const loadedEvent = ctx.store.listEvents(task.id).find((e) => e.kind === 'system' && /^Skill nạp: /.test(e.summary));
+    assert.deepEqual(loadedEvent.summary.replace('Skill nạp: ', '').split(', ').sort(), ['ponytail', 'sharp-edges', 'systematic-debugging', 'test-driven-development', 'verification-before-completion']);
+    assert.equal(path.basename(pluginDir), 'plugin');
+    await waitFor(() => !fs.existsSync(pluginDir), { label: 'dọn thư mục plugin của run' });
+    assert.ok(fs.existsSync(path.join(path.dirname(pluginDir), 'system.md')), 'chỉ xóa plugin, các file khác của run còn nguyên');
 
     const events = ctx.store.listEvents(task.id);
     assert.ok(events.some((e) => e.kind === 'tool' && /Write: hello\.txt/.test(e.summary)));
     const said = events.filter((e) => e.kind === 'say').map((e) => e.summary).join('\n');
     assert.doesNotMatch(said, /sk-ant-abcdefghijklmnop/, 'secret trong lời nói của agent phải được che');
     assert.equal(ctx.store.getState('rate_limit').windows.five_hour.utilization, 0.4);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('thư mục nối và file chép: hook cho đọc node_modules, Claude Code được khai --add-dir, AGENTS.md bị gitignore vẫn có trong worktree mà không bị commit', async () => {
+  const ctx = await setup();
+  try {
+    // Dự án như web96: AGENTS.md nằm trong .gitignore (worktree tạo từ commit nên không có), node_modules có thật ở gốc.
+    fs.writeFileSync(path.join(ctx.project, '.gitignore'), '/AGENTS.md\n/node_modules\n');
+    git(ctx.project, 'add', '-A');
+    git(ctx.project, 'commit', '-q', '-m', 'ignore');
+    fs.writeFileSync(path.join(ctx.project, 'AGENTS.md'), '# Quy ước\n');
+    fs.mkdirSync(path.join(ctx.project, 'node_modules', 'goi'), { recursive: true });
+    fs.writeFileSync(path.join(ctx.project, 'node_modules', 'goi', 'index.js'), '1\n');
+    fs.writeFileSync(
+      path.join(ctx.root, 'local', 'project.md'),
+      ['---', 'name: proj', 'folders:', '  backend: [src]', 'allowed_commands: [npm test]', 'worktree_copies: [AGENTS.md, .env, khong-co.md]', '---', ''].join('\n'),
+    );
+
+    const { id } = await ctx.runner.submit(job);
+    const task = await waitFor(() => ctx.store.getTask(id).status === 'done' && ctx.store.getTask(id), { label: 'việc xong' });
+    const [call] = ctx.calls();
+    const realDeps = fs.realpathSync.native(path.join(ctx.project, 'node_modules'));
+    assert.deepEqual(call.args.filter((_, i) => call.args[i - 1] === '--add-dir'), [realDeps]);
+    assert.equal(call.guard.links, '["node_modules"]');
+    assert.equal(fs.readFileSync(path.join(task.worktree, 'AGENTS.md'), 'utf8'), '# Quy ước\n', 'file gitignore được chép vào worktree');
+    assert.ok(!fs.existsSync(path.join(task.worktree, '.env')), 'không bao giờ chép .env');
+    assert.deepEqual(JSON.parse(task.changed_files), ['hello.txt'], 'AGENTS.md và node_modules không tính là file đã đổi');
+    assert.throws(() => git(ctx.project, 'show', `${task.branch}:AGENTS.md`), 'không commit file đã chép');
+    const created = ctx.store.listEvents(id).find((e) => e.kind === 'system' && /Tạo nhánh riêng/.test(e.summary));
+    assert.match(created.summary, /nối node_modules; chép AGENTS\.md từ dự án/);
   } finally {
     await ctx.cleanup();
   }
@@ -122,10 +156,13 @@ test('việc quá số lượt hoặc tiến trình lỗi: báo lỗi và giữ 
   const ctx = await setup({}, { FAKE_CLAUDE_SCENARIO: 'maxturns' });
   try {
     const { id } = await ctx.runner.submit(job);
-    const task = await waitFor(() => ctx.store.getTask(id).status === 'failed' && ctx.store.getTask(id), { label: 'việc lỗi' });
+    const task = await waitFor(() => ctx.store.getTask(id).status === 'failed' && ctx.store.getTask(id), { timeout: 30000, label: 'việc lỗi' });
     assert.match(task.error, /error_max_turns/);
     assert.deepEqual(JSON.parse(task.changed_files), ['hello.txt']);
     assert.equal(git(ctx.project, 'show', `${task.branch}:hello.txt`), 'xin chào');
+    // Hết lượt: nâng bậc nếu còn bậc, rồi hệ thống tự cho làm tiếp một lần, rồi mới chịu thua (việc lẻ không có Trưởng nhóm để nộp phần dở).
+    assert.equal(task.auto_continues, 1);
+    assert.equal(task.attempts, 2 + task.escalations, 'nâng bậc (nếu còn bậc) + tự làm tiếp một lần + lần cuối chịu thua');
   } finally {
     await ctx.cleanup();
   }
@@ -282,9 +319,17 @@ test('nâng bậc model: việc tự đánh giá hết số lượt thì nâng m
   const manual = await setup({}, { FAKE_CLAUDE_SCENARIO: 'maxturns_once' });
   try {
     const { id } = await manual.runner.submit({ ...job, level: 'easy' });
-    const task = await waitFor(() => manual.store.getTask(id).status === 'failed' && manual.store.getTask(id), { label: 'việc lỗi (người dùng tự chọn nên không nâng bậc)' });
+    // Không nâng bậc, nhưng hết lượt thì vẫn được hệ thống tự cho làm tiếp một lần (cùng model, cùng phiên) và xong.
+    const task = await waitFor(() => ['failed', 'done'].includes(manual.store.getTask(id).status) && manual.store.getTask(id), { label: 'việc kết thúc (người dùng tự chọn nên không nâng bậc)' });
+    assert.equal(task.status, 'done');
     assert.equal(task.escalations, 0);
+    assert.equal(task.auto_continues, 1);
     assert.equal(task.model, 'haiku');
+    const main = manual.calls().filter((c) => !c.isTriage);
+    assert.equal(main.length, 2);
+    assert.equal(main[1].resumed, true, 'làm tiếp đúng phiên cũ');
+    assert.match(main[1].prompt, /ưu tiên HOÀN THÀNH và NỘP BÀI/);
+    assert.ok(manual.store.listEvents(id).some((e) => e.kind === 'warn' && /Tự cho làm tiếp một lần/.test(e.summary)));
   } finally {
     await manual.cleanup();
   }
@@ -377,6 +422,14 @@ test('buildClaudeArgs, buildAllowedTools và buildSystemPrompt', () => {
   assert.ok(!noPack.includes('--plugin-dir'));
   assert.equal(noPack[noPack.indexOf('--tools') + 1], 'Read,Grep,Glob,Edit,Write,Bash');
   assert.doesNotMatch(noPack[noPack.indexOf('--allowedTools') + 1], /Skill/);
+  assert.ok(!noPack.includes('--add-dir'), 'không có thư mục nối thì không khai --add-dir');
+  // Đích thật của thư mục nối (node_modules của dự án) phải khai --add-dir, vì Claude Code tự chặn đọc/ls ngoài thư mục làm việc.
+  const withDirs = buildClaudeArgs({ task: {}, role, project, systemFile: 's', pluginDir: null, resume: false, addDirs: ['D:\\du-an\\node_modules', 'D:\\du-an\\vendor'] });
+  assert.deepEqual(withDirs.filter((_, i) => withDirs[i - 1] === '--add-dir'), ['D:\\du-an\\node_modules', 'D:\\du-an\\vendor']);
+  assert.equal(guardEnv({ root: 'r', allow: ['src'], mode: 'worker', links: ['node_modules'] }).COMPANY_GUARD_LINKS, '["node_modules"]');
+  assert.equal(guardEnv({ root: 'r', allow: [], mode: 'worker' }).COMPANY_GUARD_LINKS, '[]');
+  assert.equal(guardEnv({ root: 'r', allow: [], mode: 'worker', commands: ['npm test'] }).COMPANY_GUARD_COMMANDS, '["npm test"]');
+  assert.equal(guardEnv({ root: 'r', allow: [], mode: 'worker' }).COMPANY_GUARD_COMMANDS, '[]');
 
   const system = buildSystemPrompt({ member, team, role, project });
   assert.doesNotMatch(system, /Quy tắc riêng của công ty cho công nghệ/, 'dự án Next.js không có ghi chú Supabase');
@@ -392,4 +445,46 @@ test('buildClaudeArgs, buildAllowedTools và buildSystemPrompt', () => {
   const withSkills = buildSystemPrompt({ member, team, role, project, skills: ['ponytail', 'verification-before-completion'] });
   assert.match(withSkills, /## Skill của bạn[\s\S]*- company-skills:ponytail\n- company-skills:verification-before-completion[\s\S]*công cụ Skill/);
   assert.ok(withSkills.indexOf('## Skill của bạn') < withSkills.indexOf('## Quy tắc bắt buộc'));
+});
+
+test('báo có file thay đổi mà nhánh trống: việc bị đánh lỗi no_changes, không coi là xong', async () => {
+  const ctx = await setup({}, { FAKE_CLAUDE_SCENARIO: 'claim_only' });
+  try {
+    const { id } = await ctx.runner.submit(job);
+    const task = await waitFor(() => ['done', 'failed'].includes(ctx.store.getTask(id).status) && ctx.store.getTask(id), { label: 'việc kết thúc' });
+    assert.equal(task.status, 'failed');
+    assert.equal(task.failure_code, 'no_changes');
+    assert.match(task.error, /báo đã sửa 2 file \(hello\.txt, src\/lib\/moi\.ts\) nhưng nhánh không ghi nhận thay đổi nào/);
+    assert.deepEqual(JSON.parse(task.changed_files), []);
+    assert.match(task.result, /File thay đổi: hello\.txt/, 'báo cáo vẫn được giữ để xem');
+    assert.ok(ctx.store.listEvents(id).some((e) => e.kind === 'error' && /nhánh không ghi nhận/.test(e.summary)));
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('claimedChangedFiles đọc đúng mục "File thay đổi" của báo cáo', () => {
+  assert.deepEqual(claimedChangedFiles('Đã làm: x\nFile thay đổi: hello.txt, src/lib/moi.ts và e.g. bản v1.2\nCách kiểm tra: mở src/khac.ts'), ['hello.txt', 'src/lib/moi.ts']);
+  assert.deepEqual(claimedChangedFiles('## Đã làm\nx\n## File thay đổi\n- `src/app/page.tsx`\n- docs\\huong-dan.md (mới)\n## Cách kiểm tra\nchạy test/a.test.ts'), ['src/app/page.tsx', 'docs/huong-dan.md']);
+  assert.deepEqual(claimedChangedFiles('2. File thay đổi: không có file nào.\n3. Cách kiểm tra: không'), []);
+  assert.deepEqual(claimedChangedFiles('Đã làm: tạo hello.txt'), [], 'không có mục File thay đổi thì không đoán');
+  assert.deepEqual(claimedChangedFiles(null), []);
+});
+
+test('thư mục nháp .company-tmp: tạo sẵn trong worktree, ghi gì cũng không bị commit', async () => {
+  const root = tmpDir();
+  try {
+    const { project } = makeProject(root);
+    const wt = await createWorktree({ projectRoot: project, worktreesDir: path.join(root, 'wt'), member: 'An', taskId: 1 });
+    assert.equal(fs.readFileSync(path.join(wt.dir, '.company-tmp', '.gitignore'), 'utf8'), '*\n');
+    fs.writeFileSync(path.join(wt.dir, '.company-tmp', 'thu.mjs'), 'console.log(1)\n');
+    fs.writeFileSync(path.join(wt.dir, '.company-tmp', 'ket-qua.txt'), 'ok\n');
+    fs.writeFileSync(path.join(wt.dir, 'hello.txt'), 'xin chào\n');
+    const { changedFiles } = await commitWorktree({ dir: wt.dir, message: 'thử' });
+    assert.deepEqual(changedFiles, ['hello.txt']);
+    assert.equal(git(wt.dir, 'status', '--porcelain', '--ignored=no'), '', 'git không thấy gì trong thư mục nháp');
+    assert.ok(!git(project, 'ls-tree', '-r', '--name-only', wt.branch).includes('.company-tmp'));
+  } finally {
+    removeDir(root);
+  }
 });

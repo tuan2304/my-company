@@ -47,7 +47,7 @@ export function buildAllowedTools(role, project) {
   return allowed;
 }
 
-export function buildClaudeArgs({ task, role, project, systemFile, pluginDir, resume, settingsFile, mcpConfigFile = null, mcpTools = [] }) {
+export function buildClaudeArgs({ task, role, project, systemFile, pluginDir, resume, settingsFile, mcpConfigFile = null, mcpTools = [], addDirs = [] }) {
   // Có gói skill thì agent cần công cụ "Skill" để nạp chúng (vì --tools chỉ liệt kê công cụ có sẵn).
   const tools = pluginDir ? [...role.tools, 'Skill'] : role.tools;
   const args = [
@@ -78,6 +78,9 @@ export function buildClaudeArgs({ task, role, project, systemFile, pluginDir, re
   args.push('--disallowedTools', ALWAYS_DENIED.join(','));
   if (pluginDir) args.push('--plugin-dir', pluginDir);
   if (settingsFile) args.push('--settings', settingsFile);
+  // Đích thật của thư mục nối (node_modules của dự án): Claude Code tự chặn đọc/ls ngoài thư mục làm việc, kể cả khi đi qua
+  // junction, nên phải khai thêm. Ghi vào đó vẫn bị hook path-guard chặn (COMPANY_GUARD_LINKS).
+  for (const dir of addDirs) args.push('--add-dir', dir);
   if (resume && task.session_id) args.push('--resume', task.session_id);
   return args;
 }
@@ -146,14 +149,14 @@ export function buildTriageArgs(rubric) {
   ];
 }
 
-/** Nội dung file --settings: hook PreToolUse chặn cứng file ngoài phạm vi (xem path-guard.mjs). */
+/** Nội dung file --settings: hook PreToolUse chặn cứng file ngoài phạm vi và duyệt thêm lệnh Bash theo luật công ty (xem path-guard.mjs). */
 export function buildGuardSettings(guardScript) {
   const script = guardScript.split('\\').join('/');
   return {
     hooks: {
       PreToolUse: [
         {
-          matcher: 'Edit|Write|MultiEdit|NotebookEdit|Read',
+          matcher: 'Edit|Write|MultiEdit|NotebookEdit|Read|Bash',
           hooks: [{ type: 'command', command: `node "${script}"` }],
         },
       ],

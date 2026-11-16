@@ -78,7 +78,7 @@ Mỗi nhân viên làm tối đa 1 việc và giữ 2 việc chờ; tối đa 6 
 - **Mỗi việc một worktree và một nhánh git** (`company/<tên>-task<số>`), đặt ở thư mục anh em `<tên-dự-án>-worktrees/`. Công cụ tự commit khi xong. Code bạn đang viết dở không bị đụng tới.
 - **Một nhân viên = một tiến trình `claude -p`** với model, mức suy luận, công cụ và skill theo file vai trò trong `teams/`. Việc lỗi giữa chừng được tiếp tục bằng `--resume` (giữ nguyên phiên cũ).
 - **Giao tiếp qua MCP của công ty.** Giám đốc, Trưởng nhóm và nhân viên gọi công cụ như `assign_to_member`, `approve`, `reject`, `ask_lead`, `ask_owner`. Máy chủ ép luật (giới hạn tải, số lần hỏi, không chồng lấn phạm vi).
-- **Chọn model theo độ khó.** Một lần gọi `haiku` nhỏ đánh giá độ khó rồi chọn model: đơn giản dùng `haiku`, bình thường theo vai trò, khó dùng `opus`. Việc hết lượt mà chưa xong tự nâng một bậc.
+- **Chọn model theo độ khó.** Một lần gọi `haiku` nhỏ đánh giá độ khó rồi chọn model: đơn giản dùng `haiku`, bình thường theo vai trò, khó dùng `opus`. Việc hết lượt mà chưa xong tự nâng một bậc, rồi tự làm tiếp một lần; vẫn chưa xong thì phần đã làm được nộp cho Trưởng nhóm quyết thay vì mất. Việc con lỗi không để lại bài được tự giao lại một lần; việc của team chờ việc khác không bị đánh lỗi dây chuyền mà chờ bạn quyết. Bài "báo có file mà nhánh trống" bị đánh lỗi thay vì được duyệt; yêu cầu có nhánh gộp rỗng không duyệt được; việc lớn trong yêu cầu đã đóng đưa riêng vào dự án được. Việc con bị ép nhỏ (khoảng 3 file) và đề bài có sẵn bản đồ file để nhân viên không tốn lượt dò thư mục.
 - **Hạn mức Pro:** đọc từ sự kiện `rate_limit_event` của Claude; hết thì lưu việc dở, cả công ty nghỉ, tới giờ hồi thì tự làm tiếp. Công cụ gỡ `ANTHROPIC_API_KEY` khỏi mọi tiến trình con nên không bao giờ tính tiền API.
 - **Văn phòng 3D phản ánh dữ liệu thật.** Mô phỏng lấy trạng thái việc qua WebSocket (ai đọc code thì ra thư viện, ai chạy lệnh thì vào phòng server, giấy bay khi giao việc, nộp bài, trả bài).
 
@@ -86,7 +86,7 @@ Mỗi nhân viên làm tối đa 1 việc và giữ 2 việc chờ; tối đa 6 
 
 - **Không bao giờ push.** Việc đưa vào dự án chỉ xảy ra khi bạn bấm **Đưa vào dự án**, và hệ thống từ chối nếu thư mục dự án đang có file sửa dở hoặc gộp sẽ xung đột.
 - **Chặn cứng bằng hook** (`server/path-guard.mjs`): nhân viên không đọc hay sửa được `.env`, `.git`, file ngoài worktree; chỉ sửa trong thư mục của team (`folders` trong hồ sơ dự án).
-- **Chỉ chạy lệnh được cho phép:** lệnh Bash nào không nằm trong `allowed_commands` của hồ sơ dự án thì bị từ chối.
+- **Chỉ chạy lệnh được cho phép:** lệnh Bash nào không nằm trong `allowed_commands` của hồ sơ dự án thì bị từ chối. Hook chỉ duyệt thêm `rm` và `node <file>` trong thư mục làm việc và lệnh ghép `&&` khi từng phần đều được phép; thư mục nháp `.company-tmp/` ghi thoải mái, không commit.
 - **Chỉ nghe ở `127.0.0.1`**, từ chối `Host`/`Origin` lạ. Truy cập từ xa (điện thoại) đi qua Tailscale và phải có PIN.
 - **Skill phải được duyệt:** chỉ skill ghi trong `skills.lock` (kèm mã băm) mới được nạp; sửa nội dung sau khi duyệt thì bị từ chối.
 
@@ -119,7 +119,13 @@ npm run init
 
 `npm run init` làm hai việc: ẩn thư mục `.my-company/` khỏi git của dự án (qua `.git/info/exclude`, không sửa `.gitignore` của bạn) và tạo bản nháp hồ sơ dự án `local/project.md`, tự đoán công nghệ và lệnh test/build từ `package.json`.
 
-Gốc dự án mặc định là **thư mục cha** của `.my-company/`. Muốn đặt công cụ ở chỗ khác, thêm `--project <thư mục dự án>` vào mọi lệnh (hoặc đặt `COMPANY_PROJECT_ROOT`).
+Gốc dự án mặc định là **thư mục cha** của `.my-company/`. Muốn đặt công cụ ở chỗ khác, ghi `root: <thư mục dự án>` vào phần đầu `local/project.md` một lần (chạy `npm run init -- --project <thư mục dự án>` thì dòng này được ghi sẵn); từ đó `npm start` là đủ. `--project <thư mục dự án>` và `COMPANY_PROJECT_ROOT` vẫn dùng được và được ưu tiên hơn. `npm start` **từ chối chạy** khi gốc dự án không phải git repo, thay vì để mọi việc chết ở lượt 0.
+
+> **Đặt my-company ở đâu.** Công cụ nằm *bên trong* dự án thì `tsc`, `eslint` hay bộ chạy test của dự án đó có thể quét luôn code của công cụ bằng cấu hình của dự án, và báo hàng trăm lỗi giả (alias `@/` trỏ sai gốc, `data/runs/` có file `.ts` ví dụ của skill, khác `allowImportingTsExtensions`...). Code của công cụ không sai: chạy `tsc` trong chính thư mục công cụ thì sạch.
+> - Tên **`.my-company`** (có dấu chấm đầu, như hướng dẫn trên) an toàn với `tsc` vì `**` không vào thư mục ẩn. Với `eslint` và test runner thì tùy cấu hình, hãy chạy thử.
+> - Tên **không có dấu chấm** (ví dụ `my-company`) thì tsconfig có `"include": ["**/*.ts"]` sẽ quét nhầm. Thêm `"my-company"` vào `exclude` của tsconfig đó, hoặc đặt công cụ ở thư mục **ngang hàng** với dự án (`D:\my-company` + `--project D:\du-an`).
+> - `npm run init` và `npm run doctor` tự soát các tsconfig/eslint/test config ở thư mục cha và nói rõ dòng cần thêm. Công cụ chỉ đọc, **không bao giờ sửa** file của dự án bạn.
+> - Kiểm tra tay, từ thư mục dự án: `npx tsc --noEmit | grep -c "^my-company/"` phải ra `0`.
 
 ### Bước 2. Sửa hồ sơ dự án `local/project.md`
 
@@ -160,6 +166,8 @@ conventions: |
 - `allowed_commands`: **chưa khai thì nhân viên không chạy được lệnh nào, kể cả test.** Chỉ liệt kê lệnh an toàn; mỗi mục `X` thành hai quy tắc của Claude Code là `Bash(X)` và `Bash(X *)`, nên khớp cả lệnh đó và lệnh đó kèm đối số (`npm test` khớp `npm test -- --watch=false`). `npm install` mặc định không nằm trong danh sách. Có thể dùng `*` trong mục (ví dụ `node tests/*` để chạy một test riêng) theo cú pháp quy tắc của Claude Code; mẫu `node tests/*` đã được thử với agent thật và khớp đúng.
 - `known_failures` (không bắt buộc): danh sách lỗi/test **đỏ sẵn từ trước** để agent không tốn lượt sửa lỗi không phải của mình; được đưa vào lời giao việc. Không cần tự viết: đứng ở nhánh gốc chạy `npm run baseline -- --project <thư mục dự án>` (thêm `--timeout <giây>`, mặc định 300) rồi dán khối in ra vào hồ sơ.
 - Dự án Next.js: **đừng cho `build` vào `allowed_commands`**. `node_modules` trong worktree là junction nên Next.js build không chạy được ở đó (typecheck và test vẫn chạy); `init` đã tự bỏ `build` cho dự án Next.js.
+- `worktree_links` (mặc định `[node_modules]`): thư mục của dự án được **nối** vào mỗi worktree. Trong đó nhân viên chỉ **đọc** được (tài liệu của thư viện, mã nguồn gói); sửa bị hook chặn vì đích thật nằm trong dự án.
+- `worktree_copies` (không bắt buộc, ví dụ `[AGENTS.md]`): file hoặc thư mục bị gitignore mà nhân viên cần đọc. Worktree được tạo từ commit nên không có file gitignore; mục này **chép** chúng vào, không commit. Không chép `.env*`.
 - `role_skills` (không bắt buộc): thêm skill cho **một vai trò** mà không phải sao cả team vào `local/teams/`, ví dụ `role_skills: { qa: [ponytail] }`. Skill được cộng thêm vào danh sách của file vai trò. Xem vai trò nào nạp gì: `npm run skills -- roles`.
 - `conventions`: quy ước code của dự án, được đưa vào lời nhắc của mọi nhân viên. Viết càng đúng thì kết quả càng ít phải sửa.
 
@@ -310,7 +318,7 @@ npm run dev       # giao diện chạy chế độ phát triển
 
 ### Báo cáo mỗi lần push
 
-Dùng `npm run push` thay cho `git push`. Sau khi push xong, Team Báo cáo (`teams/report/`, chạy qua `scripts/push-report.mjs`) ghi một file Markdown mô tả những gì vừa push vào `reports/<năm-tháng>/<việc-đã-làm>.md`, commit file đó rồi push thêm một lần. Mỗi lần push một file; tên file lấy từ tiêu đề việc đã làm.
+Dùng `npm run push` thay cho `git push`. Sau khi push xong, Team Báo cáo (`teams/report/`, chạy qua `scripts/push-report.mjs`) ghi một file Markdown mô tả những gì vừa push vào `reports/<tên-dự-án>/<năm-tháng>/<việc-đã-làm>.md`, commit file đó rồi push thêm một lần. Mỗi lần push một file; tên file lấy từ tiêu đề việc đã làm. Tên dự án mặc định là tên thư mục của kho vừa push (chuẩn hóa: chữ thường, không dấu, nối gạch ngang); muốn đặt tên khác thì thêm `--project-name "Tên dự án"`, ví dụ `npm run push -- --project-name web96photobooth`.
 
 - Team Báo cáo cũng có mặt trong văn phòng (Trưởng nhóm Thảo, người viết Mai) và nhận việc từ Giám đốc như các team khác: khai `report: [reports]` trong `local/project.md` để Mai được phép ghi vào thư mục `reports/`. Chỉ dẫn viết báo cáo nằm ở `teams/report/reporter.md`, dùng chung cho cả lệnh `npm run push`.
 - Tóm tắt do Mai (Claude haiku) viết bằng đăng nhập gói Pro (không dùng API). Không gọi được Claude thì báo cáo vẫn được ghi, chỉ có phần dữ kiện lấy từ git. Thêm `--no-ai` để chủ động bỏ phần tóm tắt.

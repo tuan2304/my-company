@@ -46,6 +46,11 @@ const COPY = {
     cause: 'Người được giao việc đã bị xóa hoặc đổi tên trong thư mục teams. Việc này không chạy tiếp được.',
     recommended: 'skip',
   },
+  no_changes: {
+    title: 'Báo có file thay đổi nhưng nhánh trống',
+    cause: 'Nhân viên báo xong và kể tên file đã sửa, nhưng nhánh của việc không có thay đổi nào. Thường do file được ghi ngoài thư mục làm việc, bị .gitignore bỏ qua, hoặc bị xóa lại trước khi nộp. Bài không được đưa cho Trưởng nhóm duyệt để khỏi duyệt nhầm bài rỗng.',
+    recommended: 'continue',
+  },
   rejected_final: {
     title: 'Bị Trưởng nhóm trả bài hết số lần cho phép',
     cause: 'Trưởng nhóm đã trả bài nhiều lần mà bài vẫn chưa đạt. Bạn quyết định: dặn thêm để nhân viên sửa, nhận bài như đang có, hoặc bỏ.',

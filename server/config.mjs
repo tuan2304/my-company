@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFrontmatterFile } from './frontmatter.mjs';
 
 export const TOOL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -25,22 +26,63 @@ export function normalizePublicHost(raw) {
 }
 
 /**
- * Gốc dự án là thư mục cha của thư mục công cụ (mục 3.7). Có thể ghi đè bằng
- * --project hoặc COMPANY_PROJECT_ROOT, dùng khi phát triển công cụ ngoài dự án.
+ * Gốc dự án ghi trong hồ sơ dự án (khóa `root:` của local/project.md), để "npm start" không cần --project mỗi lần.
+ * Đường dẫn tương đối tính từ thư mục công cụ. Trả về '' nếu chưa có hồ sơ hoặc hồ sơ không khai (hồ sơ hỏng thì
+ * doctor báo, ở đây không ném lỗi để các lệnh khác vẫn chạy được).
  */
-export function resolveProjectRoot(explicit) {
-  const chosen = explicit || process.env.COMPANY_PROJECT_ROOT || path.dirname(TOOL_DIR);
-  return path.resolve(chosen);
+export function profileProjectRoot(localDir) {
+  const file = path.join(localDir, 'project.md');
+  if (!fs.existsSync(file)) return '';
+  try {
+    const raw = readFrontmatterFile(file).data.root;
+    return typeof raw === 'string' && raw.trim() ? path.resolve(TOOL_DIR, raw.trim()) : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Gốc dự án, theo thứ tự ưu tiên: --project, COMPANY_PROJECT_ROOT, khóa `root:` trong local/project.md,
+ * rồi mặc định là thư mục cha của thư mục công cụ (mục 3.7: công cụ nằm ở <dự án>/.my-company).
+ */
+export function resolveProjectRoot(explicit, localDir = defaultLocalDir()) {
+  const { root } = pickProjectRoot(explicit, localDir);
+  return root;
+}
+
+function defaultLocalDir() {
+  return path.resolve(process.env.COMPANY_LOCAL_DIR || path.join(TOOL_DIR, 'local'));
+}
+
+function pickProjectRoot(explicit, localDir) {
+  if (explicit) return { root: path.resolve(explicit), source: 'flag' };
+  if (process.env.COMPANY_PROJECT_ROOT) return { root: path.resolve(process.env.COMPANY_PROJECT_ROOT), source: 'env' };
+  const fromProfile = profileProjectRoot(localDir);
+  if (fromProfile) return { root: fromProfile, source: 'profile' };
+  return { root: path.dirname(TOOL_DIR), source: 'parent' };
+}
+
+/** Câu ngắn nói gốc dự án lấy từ đâu, in ra khi start/doctor để người dùng thấy ngay khi trỏ sai. */
+export function describeProjectRootSource(source) {
+  return {
+    flag: 'theo --project',
+    env: 'theo COMPANY_PROJECT_ROOT',
+    profile: 'theo root: trong local/project.md',
+    parent: 'mặc định: thư mục cha của công cụ',
+  }[source] ?? source;
 }
 
 export function loadConfig({ projectRoot, overrides = {} } = {}) {
-  const root = resolveProjectRoot(projectRoot);
+  const localDir = path.resolve(overrides.localDir || defaultLocalDir());
+  const picked = pickProjectRoot(projectRoot, localDir);
+  const root = picked.root;
   const projectName = path.basename(root);
   const cfg = {
     toolDir: TOOL_DIR,
     projectRoot: root,
-    // Gốc dự án lấy từ đâu: "flag" (--project), "env" (COMPANY_PROJECT_ROOT) hay "parent" (mặc định: thư mục cha của công cụ).
-    projectRootSource: projectRoot ? 'flag' : process.env.COMPANY_PROJECT_ROOT ? 'env' : 'parent',
+    // Gốc dự án lấy từ đâu: "flag" (--project), "env" (COMPANY_PROJECT_ROOT), "profile" (root: trong local/project.md)
+    // hay "parent" (mặc định: thư mục cha của công cụ).
+    projectRootSource: picked.source,
     projectName,
     host: '127.0.0.1',
     port: intFromEnv('OFFICE_PORT', 4310),

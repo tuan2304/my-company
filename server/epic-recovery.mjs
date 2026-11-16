@@ -118,12 +118,27 @@ async function analyze({ store, projectRoot, id }) {
     }
   }
 
+  if (recoverable && code === 'jobs_bad') {
+    // Việc chưa chạy vì việc nó phụ thuộc không xong: chủ quyết cho từng việc.
+    for (const j of jobs.filter((j) => j.status === 'blocked')) {
+      options.push({
+        action: `start_job:${j.id}`, label: `Chạy việc #${j.id} (${j.team}) trên phần đã có`,
+        hint: `"${shorten(j.title, 60)}" chưa chạy vì việc nó phụ thuộc không xong. Cho chạy ngay: gốc là phần đã được duyệt của các việc nó chờ (nếu có), còn lại là mã gốc của yêu cầu.`,
+        guidance: false,
+      });
+      options.push({
+        action: `cancel_job:${j.id}`, label: `Hủy việc #${j.id} (${j.team})`,
+        hint: `Không chạy "${shorten(j.title, 60)}" nữa. Các việc khác giữ nguyên; bạn vẫn có thể bỏ phần lỗi để Giám đốc kiểm tra phần đã có.`,
+        guidance: false,
+      });
+    }
+  }
   if (recoverable && code === 'jobs_bad' && jobsUsable(epic, jobs).length > 0) {
-    options = [{
+    options.push({
       action: 'proceed', label: 'Bỏ phần lỗi, cho Giám đốc kiểm tra phần đã có',
       hint: 'Ghép các việc đã xong (và phần đã duyệt của việc "cần xem") rồi giao Giám đốc kiểm tra. Phần lỗi bị bỏ; Giám đốc sẽ ghi rõ phần còn thiếu trong báo cáo.',
       guidance: false,
-    }];
+    });
   }
 
   const diagnosis = {
@@ -178,6 +193,10 @@ export async function recoverEpic(runner, id, { action, guidance } = {}) {
       runner.epics.log(epic, 'job', 'Chủ vẫn nhận kết quả dù Giám đốc đánh giá chưa đạt. Chờ chủ duyệt kết quả.');
     } else if (action === 'proceed') {
       await runner.epics.proceed(id);
+    } else if (action.startsWith('start_job:') || action.startsWith('cancel_job:')) {
+      const jobId = Number(action.split(':')[1]);
+      if (action.startsWith('start_job:')) await runner.epics.startBlocked(id, jobId);
+      else await runner.epics.cancelBlocked(id, jobId);
     } else {
       // continue / raise / redo: chạy lại lượt Giám đốc.
       const facts = await factsFor({ store, projectRoot: runner.cfg.projectRoot, task: run, force: true });

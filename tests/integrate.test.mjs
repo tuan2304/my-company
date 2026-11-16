@@ -143,24 +143,38 @@ test('không đưa được: việc chưa xong, việc con của việc lớn, n
   }
 });
 
-test('việc lớn và yêu cầu: dùng nhánh gộp; việc lớn nằm trong yêu cầu thì không đưa riêng', async () => {
+test('việc lớn và yêu cầu: dùng nhánh gộp; việc lớn trong yêu cầu chỉ đưa riêng được khi yêu cầu đã đóng', async () => {
   const s = setup();
   try {
     makeBranch(s.project, 'job1', { 'a.txt': 'a\n' });
     makeBranch(s.project, 'epic1', { 'b.txt': 'b\n' });
     const job = s.store.createJob({ title: 'J', prompt: 'p', team: 'backend', lead: 'Minh' });
-    s.store.updateJob(job.id, { status: 'attention', merge_branch: 'company/job1' });
+    s.store.updateJob(job.id, { status: 'running', merge_branch: 'company/job1' });
     assert.equal((await inspect({ store: s.store, projectRoot: s.project, kind: 'job', id: job.id })).state, 'not_ready', 'chưa xong thì chưa đưa');
     s.store.updateJob(job.id, { status: 'done' });
     const r1 = await integrate({ store: s.store, projectRoot: s.project, kind: 'job', id: job.id });
     assert.equal(r1.ok, true);
     assert.ok(fs.existsSync(path.join(s.project, 'a.txt')));
 
-    const inEpic = s.store.createJob({ title: 'J2', prompt: 'p', team: 'backend', lead: 'Minh', epicId: 7 });
-    s.store.updateJob(inEpic.id, { status: 'done', merge_branch: 'company/job1' });
-    assert.equal((await inspect({ store: s.store, projectRoot: s.project, kind: 'job', id: inEpic.id })).state, 'not_ready');
-
+    // Việc lớn trong yêu cầu: yêu cầu còn chạy thì không đưa riêng; yêu cầu đã đóng (kể cả "cần xem", lỗi) thì đưa riêng được,
+    // khỏi phải cứu tay bằng git như vụ epic #1 của web96.
+    makeBranch(s.project, 'job2', { 'c.txt': 'c\n' });
     const epic = s.store.createEpic({ title: 'E', prompt: 'p', director: 'Lan' });
+    s.store.updateEpic(epic.id, { status: 'running' });
+    const inEpic = s.store.createJob({ title: 'J2', prompt: 'p', team: 'backend', lead: 'Minh', epicId: epic.id });
+    s.store.updateJob(inEpic.id, { status: 'done', merge_branch: 'company/job2' });
+    const open = await inspect({ store: s.store, projectRoot: s.project, kind: 'job', id: inEpic.id });
+    assert.equal(open.state, 'not_ready');
+    assert.match(open.reason, /đang chạy \(running\)/);
+    s.store.updateEpic(epic.id, { status: 'attention' });
+    assert.equal((await inspect({ store: s.store, projectRoot: s.project, kind: 'job', id: inEpic.id })).state, 'ready', 'yêu cầu đóng ở "cần xem": đưa riêng được');
+    s.store.updateJob(inEpic.id, { status: 'attention', merge_branch: null });
+    assert.match((await inspect({ store: s.store, projectRoot: s.project, kind: 'job', id: inEpic.id })).reason, /chưa có nhánh gộp/);
+    s.store.updateJob(inEpic.id, { merge_branch: 'company/job2' });
+    const r3 = await integrate({ store: s.store, projectRoot: s.project, kind: 'job', id: inEpic.id });
+    assert.equal(r3.ok, true, 'việc lớn "cần xem" đã có nhánh gộp, trong yêu cầu đã đóng: đưa riêng được');
+    assert.ok(fs.existsSync(path.join(s.project, 'c.txt')));
+
     s.store.updateEpic(epic.id, { status: 'awaiting_result', merge_branch: 'company/epic1' });
     assert.equal((await inspect({ store: s.store, projectRoot: s.project, kind: 'epic', id: epic.id })).state, 'not_ready');
     s.store.updateEpic(epic.id, { status: 'done' });

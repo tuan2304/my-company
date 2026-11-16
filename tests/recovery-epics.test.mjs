@@ -169,15 +169,15 @@ test('việc con lỗi kéo cả chuỗi việc lớn lỗi: cứu việc con th
     const [api, ui, qa] = ctx.store.epicJobs(epic.id);
     const an = ctx.store.getTask(4);
     assert.deepEqual([an.kind, an.member], ['work', 'An'], 'giả định về số thứ tự việc');
-    assert.deepEqual([api.status, ui.status, qa.status], ['failed', 'done', 'failed']);
+    assert.deepEqual([api.status, ui.status, qa.status], ['failed', 'done', 'blocked'], 'việc phụ thuộc chờ chủ quyết, không bị đánh lỗi dây chuyền');
     assert.match(qa.error, /phụ thuộc/);
     assert.equal(an.failure_code, 'rejected_final');
 
-    // Yêu cầu: nguyên nhân là việc của team; có thể bỏ phần lỗi vì còn việc đã xong.
+    // Yêu cầu: nguyên nhân là việc của team; có thể bỏ phần lỗi vì còn việc đã xong, hoặc quyết cho việc bị chặn.
     const epicInfo = await info(ctx, epic.id);
     assert.equal(epicInfo.diagnosis.code, 'jobs_bad');
     assert.deepEqual(epicInfo.diagnosis.badJobs.map((j) => j.id), [api.id, qa.id]);
-    assert.deepEqual(actions(epicInfo), ['proceed']);
+    assert.deepEqual(actions(epicInfo), [`start_job:${qa.id}`, `cancel_job:${qa.id}`, 'proceed']);
     // Việc con: nay xử lý được dù việc lớn thuộc yêu cầu.
     const childInfo = await inspectFailure({ store: ctx.store, projectRoot: ctx.project, id: an.id });
     assert.equal(childInfo.diagnosis.recoverable, true);
@@ -342,7 +342,7 @@ test('Giám đốc đánh giá chưa đạt: chủ có thể vẫn nhận kết 
     const accepted = await recoverEpic(ctx.runner, epic.id, { action: 'accept' });
     assert.equal(accepted.status, 'awaiting_result');
     assert.equal(accepted.error, null);
-    ctx.runner.epics.approveResult(epic.id);
+    await ctx.runner.epics.approveResult(epic.id);
     assert.equal(ctx.store.getEpic(epic.id).status, 'done');
   } finally {
     await ctx.cleanup();
@@ -461,6 +461,72 @@ test('API: GET/POST /api/epics/:id/recovery|recover — kiểm tra nguồn, 400 
     assert.equal(ok.status, 200, JSON.stringify(ok.json));
     assert.equal(ok.json.epic.status, 'planning');
     assert.equal((await epicIn(ctx, epic.id, ['awaiting_plan', 'failed'])).status, 'awaiting_plan');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+/** Backend lỗi (An bị trả bài hết lượt), Frontend xong, Chất lượng phụ thuộc cả hai nên "chờ quyết định". */
+async function epicWithBlockedJob() {
+  const ctx = await boot(
+    { FAKE_DPLAN: threeJobs(), FAKE_PLANS: teamPlans, FAKE_REVIEW: 'approve', FAKE_REVIEW_MAP: JSON.stringify({ 4: 'reject_always' }) },
+    { maxConcurrent: 1 },
+  );
+  const epic = await newEpic(ctx);
+  await epicIn(ctx, epic.id, ['awaiting_plan']);
+  await ctx.runner.epics.approvePlan(epic.id);
+  const stuck = await epicIn(ctx, epic.id, ['attention', 'awaiting_result']);
+  const [api, ui, qa] = ctx.store.epicJobs(epic.id);
+  assert.deepEqual([stuck.status, api.status, ui.status, qa.status], ['attention', 'failed', 'done', 'blocked']);
+  return { ctx, epic, api, ui, qa };
+}
+
+test('việc bị chặn: chủ cho chạy trên phần đã có thì nó chạy thật (gốc có phần của Frontend), xong rồi yêu cầu lại về "cần xem" chỉ vì Backend', async () => {
+  const { ctx, epic, api, ui, qa } = await epicWithBlockedJob();
+  try {
+    process.env.FAKE_REVIEW_MAP = '{}';
+    await recoverEpic(ctx.runner, epic.id, { action: `start_job:${qa.id}` });
+    assert.equal(ctx.store.getEpic(epic.id).status, 'running');
+    const finished = await epicIn(ctx, epic.id, ['attention', 'awaiting_result', 'failed']);
+    const qaDone = ctx.store.getJob(qa.id);
+    assert.equal(qaDone.status, 'done', qaDone.error ?? '');
+    const tree = git(ctx.project, 'ls-tree', '-r', '--name-only', qaDone.base_commit).split('\n');
+    const cuc = ctx.store.jobTasks(ui.id).find((t) => t.kind === 'work');
+    assert.ok(tree.includes(outFile(cuc)), 'việc kiểm thử thấy phần của Frontend trong mã gốc của nó');
+    assert.equal(finished.status, 'attention');
+    assert.match(finished.error, new RegExp(`1 việc của team chưa đạt.*#${api.id}`));
+    const again = await info(ctx, epic.id);
+    assert.deepEqual(again.diagnosis.badJobs.map((j) => j.id), [api.id]);
+    assert.deepEqual(actions(again), ['proceed']);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('việc bị chặn: chủ hủy thì nó thành lỗi, yêu cầu kết luận lại và chỉ còn nút bỏ phần lỗi; từ chối hành động với việc không bị chặn', async () => {
+  const { ctx, epic, api, qa } = await epicWithBlockedJob();
+  try {
+    await assert.rejects(recoverEpic(ctx.runner, epic.id, { action: `start_job:${api.id}` }), (e) => e instanceof UserError && /Không thể/.test(e.message));
+    await recoverEpic(ctx.runner, epic.id, { action: `cancel_job:${qa.id}` });
+    const after = await epicIn(ctx, epic.id, ['attention', 'failed']);
+    assert.equal(after.status, 'attention');
+    assert.equal(ctx.store.getJob(qa.id).status, 'failed');
+    assert.match(ctx.store.getJob(qa.id).error, /Bạn đã hủy/);
+    assert.match(after.error, /2 việc của team chưa đạt/);
+    assert.deepEqual(actions(await info(ctx, epic.id)), ['proceed']);
+    assert.equal(ctx.store.jobTasks(qa.id).length, 0, 'việc bị hủy chưa từng chạy');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('bỏ phần lỗi khi còn việc bị chặn: việc đó được đóng thành lỗi, không lơ lửng trong yêu cầu đã kết thúc', async () => {
+  const { ctx, epic, qa } = await epicWithBlockedJob();
+  try {
+    await recoverEpic(ctx.runner, epic.id, { action: 'proceed' });
+    assert.equal(ctx.store.getJob(qa.id).status, 'failed');
+    assert.match(ctx.store.getJob(qa.id).error, /bỏ phần lỗi/);
+    assert.equal((await epicIn(ctx, epic.id, ['awaiting_result', 'attention', 'failed'])).status, 'awaiting_result');
   } finally {
     await ctx.cleanup();
   }
