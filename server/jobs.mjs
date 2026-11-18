@@ -182,7 +182,8 @@ export class Jobs {
     const job = this.store.getJob(jobId);
     if (!job || !['draft', 'waiting'].includes(job.status)) return;
     const epic = job.epic_id ? this.store.getEpic(job.epic_id) : null;
-    const deps = JSON.parse(job.depends_on ?? '[]').map((id) => this.store.getJob(id));
+    const deps = JSON.parse(job.depends_on ?? '[]');
+    const { branches, borrowed } = this.dependencyBranches(deps);
 
     let baseCommit;
     let baseDir = job.base_dir;
@@ -192,7 +193,7 @@ export class Jobs {
       } else if (deps.length) {
         const merged = await integrateBranches({
           projectRoot: this.r.cfg.projectRoot, worktreesDir: this.r.cfg.worktreesDir, name: `job${job.id}-base`,
-          baseCommit: epic?.base_commit ?? (await checkRepo(this.r.cfg.projectRoot)), branches: deps.map((d) => d.merge_branch).filter(Boolean),
+          baseCommit: epic?.base_commit ?? (await checkRepo(this.r.cfg.projectRoot)), branches,
         });
         if (!merged.ok) {
           this.finishJob(job, {
@@ -221,8 +222,40 @@ export class Jobs {
     const plan = this.r.createLeadTask({ kind: 'plan', job: started });
     const updated = this.store.updateJob(job.id, { plan_task_id: plan.id });
     this.r.log(plan.id, 'job', `Việc lớn #${job.id} "${job.title}" bắt đầu${epic ? ` (thuộc yêu cầu #${epic.id})` : ''}. ${updated.lead} sẽ lập kế hoạch.`);
+    if (!job.base_ref && borrowed.length) {
+      this.jobLog(updated, 'job', `Mã gốc của việc #${job.id} lấy thêm phần đã có của việc ${borrowed.map((id) => `#${id}`).join(', ')} (việc nó phụ thuộc trực tiếp không có kết quả).`);
+    }
     this.r.emit('job', updated);
     this.r.schedule();
+  }
+
+  /**
+   * Nhánh dùng để dựng mã gốc từ các việc phụ thuộc. Việc phụ thuộc không có nhánh (lỗi, bị hủy, Trưởng nhóm không chia được việc)
+   * thì lần lên các việc nó phụ thuộc, tới khi gặp việc có nhánh. Nhánh của một việc đã chứa phần của các việc trước nó,
+   * nên dừng ở đó là đủ và không mất kết quả đã xong ở tầng trên.
+   * `borrowed`: các việc gián tiếp được lấy thêm (để báo cho chủ).
+   */
+  dependencyBranches(depIds) {
+    const direct = new Set(depIds);
+    const seen = new Set();
+    const branches = [];
+    const borrowed = [];
+    const visit = (ids) => {
+      for (const id of ids) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const dep = this.store.getJob(id);
+        if (!dep) continue;
+        if (dep.merge_branch) {
+          if (!branches.includes(dep.merge_branch)) branches.push(dep.merge_branch);
+          if (!direct.has(id)) borrowed.push(id);
+        } else {
+          visit(JSON.parse(dep.depends_on ?? '[]'));
+        }
+      }
+    };
+    visit(depIds);
+    return { branches, borrowed };
   }
 
   // ---------- Chủ xử lý việc lớn lỗi ----------

@@ -503,6 +503,41 @@ test('việc bị chặn: chủ cho chạy trên phần đã có thì nó chạy
   }
 });
 
+test('việc bị chặn sau một chuỗi: việc ở giữa không có kết quả thì mã gốc lấy phần đã xong của việc ở tầng trên (không chạy trên mã trơn)', async () => {
+  // API (xong) → Màn hình (Trưởng nhóm không chia được việc nên lỗi, không có nhánh) → Test (chỉ phụ thuộc Màn hình).
+  const chain = JSON.stringify({
+    jobs: [
+      { team: 'backend', title: 'API đăng nhập', description: 'Làm API đăng nhập', acceptance: 'test qua' },
+      { team: 'frontend', title: 'Màn hình đăng nhập', description: 'Làm màn hình', acceptance: 'test qua', depends_on: ['API đăng nhập'] },
+      { team: 'quality', title: 'Test đăng nhập', description: 'Test tích hợp', acceptance: 'test qua', depends_on: ['Màn hình đăng nhập'] },
+    ],
+  });
+  const plans = JSON.parse(teamPlans);
+  delete plans.frontend;
+  const ctx = await boot({ FAKE_DPLAN: chain, FAKE_PLANS: JSON.stringify(plans), FAKE_REVIEW: 'approve' }, { maxConcurrent: 1 });
+  try {
+    const epic = await newEpic(ctx);
+    await epicIn(ctx, epic.id, ['awaiting_plan']);
+    await ctx.runner.epics.approvePlan(epic.id);
+    await epicIn(ctx, epic.id, ['attention', 'failed', 'awaiting_result']);
+    const [api, ui, qa] = ctx.store.epicJobs(epic.id);
+    assert.deepEqual([api.status, ui.status, qa.status], ['done', 'failed', 'blocked']);
+    assert.equal(ui.merge_branch, null);
+
+    await recoverEpic(ctx.runner, epic.id, { action: `start_job:${qa.id}` });
+    await epicIn(ctx, epic.id, ['attention', 'awaiting_result', 'failed']);
+    const qaDone = ctx.store.getJob(qa.id);
+    assert.equal(qaDone.status, 'done', qaDone.error ?? '');
+    const tree = git(ctx.project, 'ls-tree', '-r', '--name-only', qaDone.base_commit).split('\n');
+    const an = ctx.store.jobTasks(api.id).find((t) => t.kind === 'work');
+    assert.ok(tree.includes(outFile(an)), 'mã gốc của việc kiểm thử có phần của Backend dù chỉ phụ thuộc gián tiếp');
+    const logged = ctx.store.listEvents(qaDone.plan_task_id).map((e) => e.summary);
+    assert.ok(logged.some((s) => s.includes(`lấy thêm phần đã có của việc #${api.id}`)), 'báo cho chủ biết đã lấy thêm việc nào');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
 test('việc bị chặn: chủ hủy thì nó thành lỗi, yêu cầu kết luận lại và chỉ còn nút bỏ phần lỗi; từ chối hành động với việc không bị chặn', async () => {
   const { ctx, epic, api, qa } = await epicWithBlockedJob();
   try {

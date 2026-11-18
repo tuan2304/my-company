@@ -13,9 +13,10 @@ const FAKE_KEYS = [
   'FAKE_UNIQUE', 'FAKE_CONFLICT', 'FAKE_WORK_DELAY_MS', 'FAKE_DPLAN', 'FAKE_DPLAN_V2', 'FAKE_DREVIEW', 'FAKE_REWORK_JOB',
 ];
 
-async function boot(env = {}, overrides = {}) {
+async function boot(env = {}, overrides = {}, prepare = null) {
   const root = tmpDir();
   const { project, local } = makeProject(root);
+  prepare?.({ project, local });
   const cfg = testConfig(root, project, local, overrides);
   const logFile = path.join(root, 'fake.log');
   Object.assign(process.env, { FAKE_CLAUDE_LOG: logFile, FAKE_UNIQUE: '1', ...env });
@@ -49,6 +50,50 @@ const dplan = (extra = {}) => JSON.stringify({
 });
 const newEpic = (ctx, over = {}) => ctx.runner.epics.create({ title: 'Đăng nhập bằng email', prompt: 'Thêm tính năng đăng nhập bằng email', ...over });
 const epicIn = (ctx, id, statuses) => waitFor(() => statuses.includes(ctx.store.getEpic(id).status) && ctx.store.getEpic(id), { timeout: 60000, label: `yêu cầu #${id} đạt ${statuses.join('/')}` });
+
+test('lượt duyệt được chạy lệnh kiểm chứng của dự án (test, typecheck, allowed_commands); Giám đốc kiểm trên mã đã ghép có node_modules nối từ dự án', async () => {
+  const prepare = ({ project, local }) => {
+    fs.writeFileSync(
+      path.join(local, 'project.md'),
+      ['---', 'name: proj', 'stack: [Node]', 'folders:', '  backend: [src]', 'commands:', '  test: npm test', '  typecheck: npm run typecheck',
+        'allowed_commands: [npm test, node tests/*, git status]', 'conventions: |', '  Dùng ESM.', '---', ''].join('\n'),
+    );
+    fs.writeFileSync(path.join(project, '.gitignore'), 'node_modules\n');
+    git(project, 'add', '-A');
+    git(project, 'commit', '-q', '-m', 'ignore node_modules');
+    fs.mkdirSync(path.join(project, 'node_modules', 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(project, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1;\n');
+  };
+  const ctx = await boot({ FAKE_DPLAN: dplan(), FAKE_PLANS: teamPlans }, {}, prepare);
+  try {
+    const epic = await newEpic(ctx);
+    await epicIn(ctx, epic.id, ['awaiting_plan']);
+    await ctx.runner.epics.approvePlan(epic.id);
+    const reviewed = await epicIn(ctx, epic.id, ['awaiting_result', 'attention', 'failed']);
+    assert.equal(reviewed.status, 'awaiting_result', reviewed.error ?? '');
+
+    const tools = (c) => flag(c, '--allowedTools') ?? '';
+    const dreview = ctx.calls().find((c) => tools(c).includes('mcp__company__finish_epic'));
+    const leadReview = ctx.calls().find((c) => tools(c).includes('mcp__company__review_submission'));
+    const leadPlan = ctx.calls().find((c) => tools(c).includes('mcp__company__assign_to_member'));
+    for (const call of [dreview, leadReview]) {
+      for (const cmd of ['npm test', 'npm run typecheck', 'node tests/*']) assert.ok(tools(call).includes(`Bash(${cmd})`), `lượt duyệt được chạy ${cmd}`);
+      assert.match(call.prompt, /Lệnh bạn được tự chạy để kiểm chứng.*`npm run typecheck`.*`node tests\/\*`/);
+    }
+    assert.doesNotMatch(tools(leadPlan), /typecheck|node tests/, 'lập kế hoạch không chạy lệnh');
+    assert.doesNotMatch(tools(dreview), /Edit|Write/);
+
+    // Thư mục mã đã ghép có node_modules nối từ dự án (chỉ là liên kết, nội dung thật vẫn ở dự án) và hook biết đó là thư mục nối.
+    const linked = path.join(reviewed.merge_worktree, 'node_modules');
+    assert.ok(fs.lstatSync(linked).isSymbolicLink(), 'node_modules trong worktree gộp là liên kết');
+    assert.equal(fs.realpathSync(linked), fs.realpathSync(path.join(ctx.project, 'node_modules')));
+    assert.deepEqual(JSON.parse(dreview.guard.links), ['node_modules']);
+    assert.equal(dreview.guard.mode, 'readonly');
+    assert.equal(git(reviewed.merge_worktree, 'status', '--porcelain'), '', 'liên kết không làm bẩn nhánh gộp');
+  } finally {
+    await ctx.cleanup();
+  }
+});
 
 test('đường đi đầy đủ: Giám đốc lập kế hoạch + hợp đồng, chủ duyệt, Backend và Frontend song song, Chất lượng sau, ghép, Giám đốc kiểm tra, chủ duyệt', async () => {
   const ctx = await boot({ FAKE_DPLAN: dplan(), FAKE_PLANS: teamPlans, FAKE_WORK_DELAY_MS: '700' });

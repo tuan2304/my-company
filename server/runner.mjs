@@ -16,7 +16,7 @@ import { composeSkillPack } from './skills.mjs';
 import { knownFailuresLine } from './project.mjs';
 import { findMember } from './teams.mjs';
 import { nextTier, triageTask } from './triage.mjs';
-import { checkRepo, commitWorktree, createWorktree, ensureScratchDir, git, gitResult, linkedDirs } from './worktree.mjs';
+import { checkRepo, commitWorktree, createWorktree, ensureScratchDir, git, gitResult, linkDirs, linkedDirs } from './worktree.mjs';
 import { SCRATCH_DIR } from './path-guard.mjs';
 import { renderFileMap } from './file-map.mjs';
 
@@ -132,6 +132,16 @@ export function buildTaskPrompt(task) {
   const lines = [`# Việc #${task.id}: ${task.title}`, '', task.prompt.trim()];
   if (task.acceptance?.trim()) lines.push('', '## Tiêu chí hoàn thành', task.acceptance.trim());
   return lines.join('\n');
+}
+
+/**
+ * Lệnh lượt duyệt bài (Trưởng nhóm, Giám đốc) được tự chạy để kiểm chứng: test/typecheck/lint của dự án và allowed_commands
+ * chủ đã khai cho nhân viên. Chỉ một lệnh test là không đủ: lệnh đó có thể hỏng vì lỗi đã biết, còn test riêng thì không chạy được.
+ */
+export function reviewCommands(project) {
+  const c = project?.commands ?? {};
+  const all = [c.test, c.typecheck, c.lint, ...(project?.allowedCommands ?? [])];
+  return [...new Set(all.map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean))];
 }
 
 export function guardEnv({ root, allow, mode, links = [], commands = [] }) {
@@ -889,6 +899,21 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
       if (!resume) prompt = this.epics.buildReviewPrompt(epic);
     }
 
+    // Duyệt bài được tự chạy lệnh kiểm chứng của dự án (test, typecheck, allowed_commands); lập kế hoạch thì không cần.
+    const checks = review ? reviewCommands(project) : [];
+    let links = [];
+    if (review) {
+      // Worktree gộp của Giám đốc không có thư mục nối (node_modules) như worktree nhân viên: nối vào để test/typecheck chạy được.
+      if (task.kind === 'dreview' && epic.merge_worktree && cwd === epic.merge_worktree && fs.existsSync(cwd)) {
+        const added = linkDirs({ projectRoot: this.cfg.projectRoot, worktree: cwd, names: project?.worktreeLinks });
+        if (added.length) this.log(task.id, 'system', `Nối ${added.join(', ')} từ dự án vào thư mục mã đã ghép để chạy được test.`);
+      }
+      links = linkedDirs({ worktree: cwd, names: project?.worktreeLinks }).map((l) => l.name);
+    }
+    if (!resume && checks.length) {
+      prompt = `${prompt}\n\nLệnh bạn được tự chạy để kiểm chứng (khớp theo đầu lệnh, được thêm tham số): ${checks.map((c) => `\`${c}\``).join(', ')}. Lệnh khác sẽ bị từ chối.`;
+    }
+
     const mcpTools = toolsForKind(task.kind).map((t) => t.name);
     const token = crypto.randomBytes(24).toString('hex');
     state.token = token;
@@ -923,8 +948,7 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
     const args = state.engine.leadArgs({
       model: task.model, effort: task.effort, maxTurns: Math.ceil((review ? role.review_max_turns : role.max_turns) * stretch),
       systemFile, mcpConfigFile, settingsFile, mcpTools, session: resume ? task.session_id : null,
-      // Duyệt bài được chạy lệnh test của dự án để kiểm chứng báo cáo của nhân viên; lập kế hoạch thì không cần.
-      extraBash: review && project?.commands?.test ? [project.commands.test] : [],
+      extraBash: checks,
     });
     // Lời dặn của chủ khi cho chạy lại lượt này sau lỗi.
     const guidance = task.owner_guidance?.trim();
@@ -938,7 +962,7 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
       cwd,
       args,
       prompt,
-      env: { ...state.engine.env(), ...guardEnv({ root: cwd, allow: [], mode: 'readonly' }) },
+      env: { ...state.engine.env(), ...guardEnv({ root: cwd, allow: [], mode: 'readonly', links }) },
       timeoutMinutes: Math.ceil(role.timeout_minutes * stretch),
     });
     return undefined;
