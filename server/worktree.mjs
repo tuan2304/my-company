@@ -18,12 +18,16 @@ export async function git(cwd, args, { allowFail = false, raw = false } = {}) {
 }
 
 /** Như `git` nhưng không ném lỗi: trả về mã thoát và đầu ra, cho những lệnh mà mã thoát khác 0 là kết quả bình thường. */
-export async function gitResult(cwd, args) {
+export async function gitResult(cwd, args, { env, timeout } = {}) {
   try {
-    const { stdout, stderr } = await execFileAsync('git', args, { cwd, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+    const { stdout, stderr } = await execFileAsync('git', args, {
+      cwd, windowsHide: true, maxBuffer: 16 * 1024 * 1024, ...(env ? { env: { ...process.env, ...env } } : {}), ...(timeout ? { timeout } : {}),
+    });
     return { code: 0, stdout, stderr };
   } catch (err) {
-    return { code: typeof err.code === 'number' ? err.code : 1, stdout: String(err.stdout ?? ''), stderr: String(err.stderr ?? err.message ?? '') };
+    // Hết giờ (timeout) thì tiến trình bị giết: err.code không phải số, err.killed = true.
+    const stderr = err.killed ? `quá ${Math.round((timeout ?? 0) / 1000)} giây, đã dừng lệnh git. ${String(err.stderr ?? '')}` : String(err.stderr ?? err.message ?? '');
+    return { code: typeof err.code === 'number' ? err.code : 1, stdout: String(err.stdout ?? ''), stderr };
   }
 }
 

@@ -7,7 +7,7 @@ import { openDb } from './db.mjs';
 import { runDoctor } from './doctor.mjs';
 import { detectEngines } from './engines/index.mjs';
 import { ensureDirs } from './config.mjs';
-import { inspect as inspectIntegration, integrate as integrateIntoProject } from './integrate.mjs';
+import { inspect as inspectIntegration, inspectPush, integrate as integrateIntoProject, pushToMain } from './integrate.mjs';
 import { inspectEpicFailure, recoverEpic } from './epic-recovery.mjs';
 import { inspectFailure, recoverTask } from './recovery.mjs';
 import { loginPage } from './login-page.mjs';
@@ -368,6 +368,22 @@ export async function startServer({ cfg, dev = false, withUi = true, uiHandler =
         const result = await integrateIntoProject({ store, projectRoot: cfg.projectRoot, kind, id });
         if (!result.ok) return sendJson(res, 409, { error: result.error, state: result.state });
         push('integrated', { kind, id });
+        return sendJson(res, 200, result);
+      }
+    }
+
+    // ---- Push lên main: gộp nhánh vào main (không đổi nhánh đang mở) rồi git push origin main, chỉ khi người dùng bấm ----
+    const pushMainMatch = pathname.match(/^\/api\/push-main\/(task|job|epic)\/(\d+)$/);
+    if (pushMainMatch) {
+      const kind = pushMainMatch[1];
+      const id = Number(pushMainMatch[2]);
+      if (method === 'GET') {
+        return sendJson(res, 200, await inspectPush({ store, projectRoot: cfg.projectRoot, kind, id }));
+      }
+      if (method === 'POST') {
+        const result = await pushToMain({ store, projectRoot: cfg.projectRoot, kind, id });
+        if (result.merged) push('integrated', { kind, id });
+        if (!result.ok) return sendJson(res, 409, { error: result.error, state: result.state, merged: result.merged });
         return sendJson(res, 200, result);
       }
     }

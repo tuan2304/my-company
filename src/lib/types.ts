@@ -362,6 +362,25 @@ export interface IntegrationInfo {
   integration: { branch: string; target: string; commit_id: string | null; merged_at: number } | null;
 }
 
+/** Xem trước "Push lên main" (GET /api/push-main/...). */
+export interface PushMainInfo {
+  kind: 'task' | 'job' | 'epic';
+  id: number;
+  title: string | null;
+  branch: string | null;
+  /** Nhánh đích: main (hoặc master). */
+  target: string | null;
+  remote: string;
+  /** Nhánh đang mở ở thư mục dự án. */
+  current: string | null;
+  state: 'not_ready' | 'missing' | 'blocked' | 'conflict' | 'ready' | 'unpushed' | 'pushed';
+  reason: string | null;
+  files: string[];
+  conflictFiles: string[];
+  dirtyFiles: string[];
+  commit: string | null;
+}
+
 export interface FailureOption {
   /**
    * Hành động với việc/lượt: continue, raise, redo, accept, skip. Riêng yêu cầu còn có proceed (bỏ phần lỗi), accept (vẫn nhận kết quả),
