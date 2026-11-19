@@ -539,12 +539,14 @@ button.small { padding: 6px 12px; font-size: 12.5px; }
 .group > ul { margin-top: 4px; }
 
 /* ---------- màn hình nhỏ ---------- */
-@media (max-width: 1000px) {
+@media (max-width: 1180px) {
   .stage-tools { left: 14px; bottom: 88px; }
   .stage-info { right: 14px; bottom: 88px; }
   .stage-summary { display: none; }
   .legend-pop { bottom: 136px; right: 14px; }
   .person-pop { left: 14px; right: 14px; top: auto; bottom: 134px; width: auto; max-height: 42%; }
+}
+@media (max-width: 1000px) {
   .brand-text { display: none; }
   .live { display: none; }
 }

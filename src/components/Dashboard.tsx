@@ -62,7 +62,6 @@ const NAV: { id: Exclude<Panel, null>; label: string; icon: IconName }[] = [
   { id: 'schedules', label: 'Mẫu & lịch', icon: 'calendar' },
   { id: 'report', label: 'Báo cáo', icon: 'report' },
   { id: 'usage', label: 'Mức dùng', icon: 'gauge' },
-  { id: 'engines', label: 'Liên kết AI', icon: 'link' },
 ];
 
 export default function Dashboard() {
@@ -588,6 +587,10 @@ export default function Dashboard() {
       </div>
 
       <footer className="dock" aria-label="Thao tác chính">
+        <button type="button" className="dock-btn" aria-pressed={panel === 'engines'} title="Liên kết AI" onClick={() => openPanel('engines')}>
+          <Icon name="link" />
+          <span>Liên kết AI</span>
+        </button>
         <button type="button" className="dock-btn" aria-pressed={feedOpen} onClick={() => setFeedOpen((v) => !v)}>
           <Icon name="chat" />
           <span>Tin nhắn</span>
