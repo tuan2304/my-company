@@ -21,12 +21,20 @@ async function boot(env = {}, overrides = {}) {
   Object.assign(process.env, { FAKE_CLAUDE_LOG: logFile, FAKE_UNIQUE: '1', ...env });
   const app = await startServer({ cfg, withUi: false, log: () => {} });
   const calls = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
-  const cleanup = async () => {
-    await app.close();
+  const ctx = { root, project, cfg, app, runner: app.runner, store: app.store, calls };
+  ctx.cleanup = async () => {
+    await ctx.app.close();
     for (const key of FAKE_KEYS) delete process.env[key];
     removeDir(root);
   };
-  return { root, project, cfg, app, runner: app.runner, store: app.store, calls, cleanup };
+  // Tắt máy chủ rồi bật lại trên cùng dữ liệu (như chủ tắt máy rồi chạy lại npm start).
+  ctx.restart = async () => {
+    await ctx.app.close();
+    ctx.app = await startServer({ cfg, withUi: false, log: () => {} });
+    ctx.runner = ctx.app.runner;
+    ctx.store = ctx.app.store;
+  };
+  return ctx;
 }
 
 const flag = (call, name) => call.args[call.args.indexOf(name) + 1];
@@ -562,6 +570,106 @@ test('bỏ phần lỗi khi còn việc bị chặn: việc đó được đóng
     assert.equal(ctx.store.getJob(qa.id).status, 'failed');
     assert.match(ctx.store.getJob(qa.id).error, /bỏ phần lỗi/);
     assert.equal((await epicIn(ctx, epic.id, ['awaiting_result', 'attention', 'failed'])).status, 'awaiting_result');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('đợt làm lại mà mọi việc đều lỗi: vẫn có nút bỏ phần lỗi, Giám đốc kiểm tra kết quả đã ghép của đợt trước (không kẹt không nút)', async () => {
+  // Giống yêu cầu #10 trên web96: đợt 1 chỉ có một việc sửa, việc đó lỗi; trước đây usableJobs rỗng nên giao diện không có lựa chọn nào.
+  const rework = JSON.stringify({ team: 'frontend', title: 'Sửa sau kiểm tra', description: 'Sửa phần Giám đốc phát hiện', acceptance: 'test qua' });
+  const plans = JSON.parse(teamPlans);
+  delete plans.frontend; // Trưởng nhóm Frontend không chia được việc nên việc đợt 1 lỗi, không có nhánh.
+  const ctx = await boot({ FAKE_DPLAN: oneJob(), FAKE_PLANS: JSON.stringify(plans), FAKE_REVIEW: 'approve', FAKE_DREVIEW: 'rework_once', FAKE_REWORK_JOB: rework });
+  try {
+    const epic = await newEpic(ctx);
+    await epicIn(ctx, epic.id, ['awaiting_plan']);
+    await ctx.runner.epics.approvePlan(epic.id);
+    const stuck = await epicIn(ctx, epic.id, ['attention', 'awaiting_result', 'failed']);
+    assert.equal(stuck.status, 'attention', stuck.error ?? '');
+    assert.equal(stuck.round, 1);
+    assert.equal(stuck.merge_branch, `company/epic${epic.id}`);
+    const fix = ctx.store.epicJobs(epic.id).find((j) => j.round === 1);
+    assert.equal(fix.status, 'failed');
+    assert.equal(fix.merge_branch, null);
+
+    const before = await info(ctx, epic.id);
+    assert.equal(before.diagnosis.code, 'jobs_bad');
+    assert.deepEqual(actions(before), ['proceed']);
+    assert.ok(before.diagnosis.options[0].hint.includes(`đợt trước (nhánh company/epic${epic.id})`), before.diagnosis.options[0].hint);
+
+    // Lượt kiểm tra đợt 0 (đã giao việc làm lại) thoát muộn đúng lúc yêu cầu đang ghép / kiểm tra đợt 1: không được sinh lượt thử lại thừa.
+    const oldReview = dirTasks(ctx, epic.id, 'dreview')[0];
+    assert.equal(oldReview.subject_id, 0);
+    for (const status of ['integrating', 'reviewing']) {
+      ctx.store.updateEpic(epic.id, { status });
+      await ctx.runner.epics.afterChange(oldReview.id);
+      assert.equal(dirTasks(ctx, epic.id, 'dreview').length, 1, `lượt kiểm tra cũ thoát muộn lúc "${status}" không sinh lượt mới`);
+      assert.equal(ctx.store.getEpic(epic.id).status, status);
+    }
+    ctx.store.updateEpic(epic.id, { status: 'attention' });
+
+    const firstTree = git(ctx.project, 'ls-tree', '-r', '--name-only', `company/epic${epic.id}`);
+    await recoverEpic(ctx.runner, epic.id, { action: 'proceed' });
+    const done = await epicIn(ctx, epic.id, ['awaiting_result', 'attention', 'failed']);
+    assert.equal(done.status, 'awaiting_result', done.error ?? '');
+    assert.equal(done.merge_branch, `company/epic${epic.id}-r1`);
+    assert.equal(git(ctx.project, 'ls-tree', '-r', '--name-only', done.merge_branch), firstTree, 'nhánh kiểm tra giữ nguyên kết quả đợt trước');
+    const review = ctx.calls().filter((c) => flag(c, '--allowedTools')?.includes('finish_epic')).at(-1);
+    assert.match(review.prompt, /Sửa sau kiểm tra — failed\n\(Việc này KHÔNG hoàn chỉnh/, 'Giám đốc được báo việc đợt làm lại bị bỏ');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('máy chủ tắt giữa lúc gộp nhánh: khởi động lại thì việc lớn gộp lại, yêu cầu đi tiếp tới chờ duyệt (không đứng mãi ở "đang gộp")', async () => {
+  const ctx = await boot({ FAKE_DPLAN: twoJobs(), FAKE_PLANS: teamPlans, FAKE_REVIEW: 'approve' });
+  try {
+    const epic = await newEpic(ctx);
+    await epicIn(ctx, epic.id, ['awaiting_plan']);
+    await ctx.runner.epics.approvePlan(epic.id);
+    assert.equal((await epicIn(ctx, epic.id, ['awaiting_result', 'attention', 'failed'])).status, 'awaiting_result');
+    const [api] = ctx.store.epicJobs(epic.id);
+
+    // Dựng lại lúc máy tắt: việc Backend đang gộp nhánh (chưa ghi nhánh gộp), yêu cầu còn chờ nó.
+    ctx.store.updateJob(api.id, { status: 'integrating', merge_branch: null, merge_worktree: null, finished_at: null });
+    ctx.store.updateEpic(epic.id, { status: 'running', merge_branch: null, merge_worktree: null, verdict: null, finished_at: null });
+    await ctx.restart();
+    const again = await epicIn(ctx, epic.id, ['awaiting_result', 'attention', 'failed']);
+    assert.equal(again.status, 'awaiting_result', again.error ?? '');
+    const job = ctx.store.getJob(api.id);
+    assert.equal(job.status, 'done', job.error ?? '');
+    assert.equal(job.merge_branch, `company/job${api.id}-2`, 'nhánh gộp dở được giữ, lần gộp lại lấy tên mới');
+    const work = ctx.store.jobTasks(api.id).find((t) => t.kind === 'work');
+    assert.ok(git(ctx.project, 'ls-tree', '-r', '--name-only', job.merge_branch).split('\n').includes(outFile(work)), 'nhánh gộp lại có bài của nhân viên');
+    assert.equal(again.merge_branch, `company/epic${epic.id}-2`);
+
+    // Lần này máy tắt đúng lúc ghép kết quả của cả yêu cầu (mọi việc đã xong).
+    ctx.store.updateEpic(epic.id, { status: 'integrating', merge_branch: null, merge_worktree: null, verdict: null, finished_at: null });
+    await ctx.restart();
+    const third = await epicIn(ctx, epic.id, ['awaiting_result', 'attention', 'failed']);
+    assert.equal(third.status, 'awaiting_result', third.error ?? '');
+    assert.equal(third.merge_branch, `company/epic${epic.id}-3`);
+    assert.equal(ctx.store.epicJobs(epic.id).filter((j) => j.status === 'integrating').length, 0);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('máy chủ tắt giữa lúc ghép sau khi chủ chọn bỏ phần lỗi: ghép lại vẫn giữ lựa chọn đó (không quay về "cần xem")', async () => {
+  const { ctx, epic, api, ui } = await epicWithBlockedJob();
+  try {
+    process.env.FAKE_REVIEW_MAP = '{}';
+    await recoverEpic(ctx.runner, epic.id, { action: 'proceed' });
+    assert.equal((await epicIn(ctx, epic.id, ['awaiting_result', 'attention', 'failed'])).status, 'awaiting_result');
+    ctx.store.updateEpic(epic.id, { status: 'integrating', merge_branch: null, merge_worktree: null, verdict: null, finished_at: null });
+    await ctx.restart();
+    const again = await epicIn(ctx, epic.id, ['awaiting_result', 'attention', 'failed']);
+    assert.equal(again.status, 'awaiting_result', again.error ?? '');
+    assert.equal(ctx.store.getJob(api.id).status, 'failed', 'việc lỗi vẫn bị bỏ');
+    const tree = git(ctx.project, 'ls-tree', '-r', '--name-only', again.merge_branch).split('\n');
+    const cuc = ctx.store.jobTasks(ui.id).find((t) => t.kind === 'work');
+    assert.ok(tree.includes(outFile(cuc)), 'nhánh ghép lại có phần của Frontend');
   } finally {
     await ctx.cleanup();
   }

@@ -572,6 +572,23 @@ export class Jobs {
     return updated;
   }
 
+  /**
+   * Máy chủ tắt giữa lúc gộp nhánh thì việc lớn đứng mãi ở "đang gộp" (advance bỏ qua trạng thái này, giao diện không có nút).
+   * Gọi khi khởi động: gộp lại từ đầu. Nhánh gộp dở (nếu có) được giữ, lần gộp mới lấy tên có đuôi -2, -3...
+   */
+  async resumeIntegrating() {
+    for (const job of this.store.jobsByStatus('integrating')) {
+      if (this.r.stopped) return;
+      this.store.updateJob(job.id, { status: 'running' });
+      this.jobLog(job, 'system', `Máy chủ tắt khi đang gộp nhánh của việc lớn #${job.id}: gộp lại.`);
+      try {
+        await this.advance(job.id);
+      } catch (err) {
+        this.finishJob(job, { status: 'attention', error: `Không gộp lại được sau khi máy chủ khởi động lại: ${err.message}` });
+      }
+    }
+  }
+
   /** Tính lại trạng thái việc lớn từ trạng thái các việc con; khi mọi việc đã xong thì gộp nhánh và báo cáo. */
   async advance(jobId) {
     const job = this.store.getJob(jobId);

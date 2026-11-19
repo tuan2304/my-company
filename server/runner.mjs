@@ -271,6 +271,16 @@ export class Runner extends EventEmitter {
     this.pruneStalePluginCopies();
     this.recover();
     this.schedule();
+    this.resumeIntegrating().catch((err) => console.error('[company] Không gộp lại được việc đang gộp dở:', err));
+  }
+
+  /** Việc lớn rồi yêu cầu đang gộp/ghép dở lúc máy chủ tắt: làm lại bước gộp (xem Jobs/Epics.resumeIntegrating). */
+  async resumeIntegrating() {
+    // Chốt danh sách yêu cầu kẹt TRƯỚC: việc lớn gộp lại xong sẽ tự ghép yêu cầu của nó (trạng thái "đang ghép" mới),
+    // không được coi đó là kẹt mà ghép thêm lần nữa song song.
+    const epics = this.store.epicsByStatus('integrating');
+    await this.jobs.resumeIntegrating();
+    if (!this.stopped) await this.epics.resumeIntegrating(epics);
   }
 
   /** Dừng mọi tiến trình con và chờ chúng thoát hẳn (tối đa vài giây) trước khi đóng cơ sở dữ liệu. */

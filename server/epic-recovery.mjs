@@ -1,6 +1,7 @@
 import { diagnose } from './diagnose.mjs';
 import { UserError } from './errors.mjs';
 import { shorten } from './guard.mjs';
+import { canProceed, usableJobs } from './epics.mjs';
 import { applyLead, cleanGuidance, evidenceOf, factsFor, reopenParent } from './recovery.mjs';
 
 /**
@@ -133,10 +134,13 @@ async function analyze({ store, projectRoot, id }) {
       });
     }
   }
-  if (recoverable && code === 'jobs_bad' && jobsUsable(epic, jobs).length > 0) {
+  if (recoverable && code === 'jobs_bad' && canProceed(epic, jobs)) {
+    const onlyPrevious = usableJobs(epic, jobs).length === 0;
     options.push({
       action: 'proceed', label: 'Bỏ phần lỗi, cho Giám đốc kiểm tra phần đã có',
-      hint: 'Ghép các việc đã xong (và phần đã duyệt của việc "cần xem") rồi giao Giám đốc kiểm tra. Phần lỗi bị bỏ; Giám đốc sẽ ghi rõ phần còn thiếu trong báo cáo.',
+      hint: onlyPrevious
+        ? `Đợt làm lại không có việc nào xong, nên Giám đốc kiểm tra kết quả đã ghép của đợt trước (nhánh ${epic.merge_branch}). Phần lỗi bị bỏ; Giám đốc sẽ ghi rõ phần còn thiếu trong báo cáo.`
+        : 'Ghép các việc đã xong (và phần đã duyệt của việc "cần xem") rồi giao Giám đốc kiểm tra. Phần lỗi bị bỏ; Giám đốc sẽ ghi rõ phần còn thiếu trong báo cáo.',
       guidance: false,
     });
   }
@@ -152,9 +156,6 @@ async function analyze({ store, projectRoot, id }) {
   return { epic, diagnosis, run, evidence };
 }
 
-function jobsUsable(epic, jobs) {
-  return jobs.filter((j) => j.round === epic.round && ['done', 'attention'].includes(j.status) && j.merge_branch);
-}
 
 /** Thông tin cho màn hình xử lý yêu cầu lỗi (cùng dạng với inspectFailure của việc). */
 export async function inspectEpicFailure({ store, projectRoot, id }) {

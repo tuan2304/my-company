@@ -19,6 +19,19 @@ const MAX_JOBS = 6;
 const MAX_REPLANS = 2;
 export const MAX_REWORK_ROUNDS = 1;
 
+/** Việc của đợt hiện tại có kết quả để ghép: đã xong, hoặc "cần xem" nhưng đã gộp được phần đã duyệt. */
+export function usableJobs(epic, jobs) {
+  return jobs.filter((j) => j.round === epic.round && ['done', 'attention'].includes(j.status) && j.merge_branch);
+}
+
+/**
+ * Có gì để Giám đốc kiểm tra khi bỏ phần lỗi: việc dùng được của đợt này, hoặc (ở đợt làm lại) nhánh đã ghép của đợt trước.
+ * Thiếu vế sau thì đợt làm lại mà mọi việc đều lỗi sẽ kẹt: không còn nút nào dù kết quả đợt trước vẫn nằm đó.
+ */
+export function canProceed(epic, jobs) {
+  return usableJobs(epic, jobs).length > 0 || (epic.round > 0 && Boolean(epic.merge_branch));
+}
+
 /** Yêu cầu còn "mở" hoặc vừa kết thúc ở lỗi/cần xem thì mới cứu được một việc lớn của nó. */
 const EPIC_RESCUE_STATUSES = ['running', 'attention', 'failed'];
 
@@ -218,8 +231,10 @@ export class Epics {
         this.update(epic.id, { status: 'awaiting_plan', plan_summary: task.result ?? '' });
         this.log(epic, 'job', `Kế hoạch đã sẵn sàng (${drafts.length} việc cho team). Chờ chủ duyệt.`);
       }
-    } else if (task.kind === 'dreview' && epic.status !== 'running') {
+    } else if (task.kind === 'dreview' && epic.status === 'reviewing' && task.subject_id === epic.round) {
       // Nếu Giám đốc đã giao việc làm lại thì trạng thái là "running" và các việc đó đang chạy.
+      // Lượt kiểm tra của đợt trước thoát muộn (tiến trình chậm, việc làm lại đã xong hoặc lỗi, yêu cầu đang ghép hay đang kiểm tra đợt mới)
+      // thì bỏ qua: trước đây nó bị coi là "đợt này kiểm tra mà chưa kết luận", sinh lượt thử lại thừa rồi đẩy yêu cầu về "cần xem".
       if (epic.verdict === 'accept') {
         this.update(epic.id, { status: 'awaiting_result' });
         this.log(epic, 'job', 'Giám đốc đã kiểm tra xong. Chờ chủ duyệt kết quả.');
@@ -455,7 +470,7 @@ export class Epics {
     if (!['attention', 'failed'].includes(epic.status)) throw new UserError('Chỉ làm được khi yêu cầu đang ở trạng thái cần xem hoặc lỗi.');
     const jobs = this.store.epicJobs(id);
     if (jobs.some((j) => JOB_OPEN.includes(j.status))) throw new UserError('Vẫn còn việc đang chạy.');
-    if (this.usableJobs(epic, jobs).length === 0) throw new UserError('Chưa có việc nào có kết quả để cho Giám đốc kiểm tra.');
+    if (!canProceed(epic, jobs)) throw new UserError('Chưa có việc nào có kết quả để cho Giám đốc kiểm tra.');
     // Việc đang "chờ quyết định" nằm trong phần bị bỏ: đóng lại cho rõ, không để lơ lửng trong một yêu cầu đã kết thúc.
     for (const j of jobs.filter((j) => j.status === 'blocked')) {
       this.r.emit('job', this.store.updateJob(j.id, { status: 'failed', error: `${j.error ?? ''} Bạn đã chọn bỏ phần lỗi nên việc này không chạy.`.trim(), finished_at: Date.now() }));
@@ -466,9 +481,23 @@ export class Epics {
     return this.store.getEpic(id);
   }
 
-  /** Việc của đợt hiện tại có kết quả để ghép: đã xong, hoặc "cần xem" nhưng đã gộp được phần đã duyệt. */
-  usableJobs(epic, jobs) {
-    return jobs.filter((j) => j.round === epic.round && ['done', 'attention'].includes(j.status) && j.merge_branch);
+  /**
+   * Máy chủ tắt giữa lúc ghép kết quả các team thì yêu cầu đứng mãi ở "đang ghép". Gọi khi khởi động (sau khi việc lớn đã gộp lại).
+   * Đang ghép mà có việc chưa đạt thì chắc chắn chủ đã chọn "bỏ phần lỗi" (ghép đủ thì đã dừng ở "cần xem" trước khi ghép), nên giữ đúng lựa chọn đó.
+   */
+  async resumeIntegrating(stuck = this.store.epicsByStatus('integrating')) {
+    for (const { id } of stuck) {
+      const epic = this.store.getEpic(id);
+      if (epic?.status !== 'integrating' || this.r.stopped) continue;
+      const partial = this.store.epicJobs(epic.id).some((j) => j.status !== 'done');
+      this.update(epic.id, { status: 'running' });
+      this.log(epic, 'system', `Máy chủ tắt khi đang ghép kết quả các team của yêu cầu #${epic.id}: ghép lại${partial ? ' (giữ lựa chọn bỏ phần lỗi)' : ''}.`);
+      try {
+        await this.evaluate(epic.id, { partial });
+      } catch (err) {
+        this.finishEpic(this.store.getEpic(epic.id), { status: 'attention', error: `Không ghép lại được sau khi máy chủ khởi động lại: ${err.message}` });
+      }
+    }
   }
 
   /** Mọi việc của team đã kết thúc: không đạt thì báo chủ, đạt thì ghép kết quả và giao Giám đốc kiểm tra. */
@@ -496,7 +525,7 @@ export class Epics {
       const baseCommit = round === 0 ? epic.base_commit : await resolveRef(this.r.cfg.projectRoot, epic.merge_branch);
       result = await integrateBranches({
         projectRoot: this.r.cfg.projectRoot, worktreesDir: this.r.cfg.worktreesDir, name, baseCommit,
-        branches: (partial ? this.usableJobs(epic, jobs) : jobs.filter((j) => j.round === round)).map((j) => j.merge_branch).filter(Boolean),
+        branches: (partial ? usableJobs(epic, jobs) : jobs.filter((j) => j.round === round)).map((j) => j.merge_branch).filter(Boolean),
       });
     } catch (err) {
       this.finishEpic(epic, { status: 'attention', summary: this.buildSummary(epic, jobs), error: `Không ghép được kết quả các team: ${err.message}` });

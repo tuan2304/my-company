@@ -589,6 +589,15 @@ export class Store {
     return this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) ?? null;
   }
 
+  /** Việc lớn / yêu cầu theo trạng thái, cũ trước (không giới hạn như listJobs/listEpics). */
+  jobsByStatus(status) {
+    return this.db.prepare('SELECT * FROM jobs WHERE status = ? ORDER BY id ASC').all(status);
+  }
+
+  epicsByStatus(status) {
+    return this.db.prepare('SELECT * FROM epics WHERE status = ? ORDER BY id ASC').all(status);
+  }
+
   listJobs(limit = 50) {
     return this.db.prepare('SELECT * FROM jobs ORDER BY id DESC LIMIT ?').all(limit);
   }
