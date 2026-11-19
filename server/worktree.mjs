@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { SCRATCH_DIR } from './path-guard.mjs';
+import { SCRATCH_DIR, folderRules, inFolders } from './path-guard.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -109,7 +109,11 @@ function unlinkLinks(dir) {
 }
 
 /** Mỗi việc một worktree và một nhánh riêng, đặt bên ngoài dự án (mục 3.7). */
-export async function createWorktree({ projectRoot, worktreesDir, member, taskId, links = [], copies = [], baseCommit: explicitBase }) {
+/**
+ * `startFrom` (không bắt buộc): nhánh/commit để thư mục làm việc bắt đầu từ đó (bài dở của lần trước) trong khi mã gốc của việc
+ * (`baseCommit`, dùng để so diff và duyệt) vẫn giữ nguyên. Nhánh đó không còn thì bắt đầu từ mã gốc như thường.
+ */
+export async function createWorktree({ projectRoot, worktreesDir, member, taskId, links = [], copies = [], baseCommit: explicitBase, startFrom = null }) {
   const head = await checkRepo(projectRoot);
   const baseCommit = explicitBase ?? head;
   fs.mkdirSync(worktreesDir, { recursive: true });
@@ -120,11 +124,13 @@ export async function createWorktree({ projectRoot, worktreesDir, member, taskId
   }
   const branch = `company/${slug}`;
   const dir = path.join(worktreesDir, slug);
-  await git(projectRoot, ['worktree', 'add', '-b', branch, dir, baseCommit]);
+  const start = startFrom ? await gitResult(projectRoot, ['rev-parse', '--verify', '--quiet', `${startFrom}^{commit}`]) : null;
+  const startCommit = start?.code === 0 ? start.stdout.trim() : null;
+  await git(projectRoot, ['worktree', 'add', '-b', branch, dir, startCommit ?? baseCommit]);
   ensureScratchDir(dir);
   const linked = linkDirs({ projectRoot, worktree: dir, names: links });
   const copied = copyFiles({ projectRoot, worktree: dir, names: copies });
-  return { dir, branch, baseCommit, linked, copied };
+  return { dir, branch, baseCommit, linked, copied, startedFrom: startCommit ? startFrom : null };
 }
 
 /**
@@ -262,13 +268,34 @@ export function ensureScratchDir(worktree) {
   return dir;
 }
 
-/** Commit mọi thay đổi trong worktree lên nhánh của việc (không push). Trả về danh sách file đổi. Thư mục nháp luôn bị loại. */
-export async function commitWorktree({ dir, message, exclude = [] }) {
+/**
+ * File nằm ngoài thư mục được sửa của team. Nhân viên không tự ghi được ra đó (hook chặn), nên thay đổi ở đó là do công cụ tự sinh:
+ * `next dev` sửa tsconfig.json và next-env.d.ts (web96: việc của team Kiểm thử mang hai file này vào nhánh, rồi DevOps không khôi phục
+ * được). `scope` = { allow, mode, written } giống path-guard; null = không lọc. `written`: file nhân viên tự ghi bằng công cụ,
+ * không bao giờ bị bỏ (hook đã cho ghi thì là bài làm, không phải thứ tự sinh).
+ */
+export function outOfScope(files, scope) {
+  if (!scope) return [];
+  const { include, exclude } = folderRules(scope.allow);
+  const scopedEmpty = scope.mode === 'scoped' && include.length === 0;
+  if (!scopedEmpty && include.length === 0 && exclude.length === 0) return [];
+  const key = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const written = new Set((scope.written ?? []).map(key));
+  return files.filter((f) => !written.has(key(f)) && (scopedEmpty || !inFolders(f, scope.allow)));
+}
+
+/**
+ * Commit mọi thay đổi trong worktree lên nhánh của việc (không push). Trả về danh sách file đổi. Thư mục nháp luôn bị loại.
+ * Có `scope` thì file ngoài phạm vi của team không được commit (để nguyên trong thư mục làm việc) và trả về trong `skipped`.
+ */
+export async function commitWorktree({ dir, message, exclude = [], scope = null }) {
   exclude = [...new Set([SCRATCH_DIR, ...exclude])];
   const specs = exclude.length ? ['--', '.', ...excludeSpecs(exclude)] : [];
   const status = await git(dir, ['status', '--porcelain=v1', '-z', '--untracked-files=all', ...specs], { raw: true });
-  const changedFiles = parsePorcelainZ(status);
-  if (changedFiles.length === 0) return { changedFiles: [], commit: null };
+  const all = parsePorcelainZ(status);
+  const skipped = outOfScope(all, scope);
+  const changedFiles = all.filter((f) => !skipped.includes(f));
+  if (changedFiles.length === 0) return { changedFiles: [], commit: null, skipped };
   // Mục đã nằm trong .gitignore thì không cần loại trừ nữa. Nếu vẫn truyền `:(exclude)` cho nó, `git add` gom file khác xong
   // vẫn thoát mã 1 ("paths are ignored by one of your .gitignore files"): commit bị bỏ, công việc nằm lại trong index mà không ai hay.
   const notIgnored = [];
@@ -276,7 +303,10 @@ export async function commitWorktree({ dir, message, exclude = [] }) {
     const checked = await gitResult(dir, ['check-ignore', '-q', '--', name]);
     if (checked.code !== 0) notIgnored.push(name);
   }
-  await git(dir, ['add', '-A', ...(notIgnored.length ? ['--', '.', ...excludeSpecs(notIgnored)] : [])]);
+  // File bị bỏ vì ngoài phạm vi: loại theo đúng tên (literal: tên có ký tự glob không bị hiểu thành mẫu).
+  const skipSpecs = skipped.map((f) => `:(exclude,literal)${f}`);
+  const pathspecs = [...excludeSpecs(notIgnored), ...skipSpecs];
+  await git(dir, ['add', '-A', ...(pathspecs.length ? ['--', '.', ...pathspecs] : [])]);
   await git(dir, [
     '-c', 'user.name=Công ty AI',
     '-c', 'user.email=my-company@localhost',
@@ -284,5 +314,5 @@ export async function commitWorktree({ dir, message, exclude = [] }) {
     'commit', '--no-verify', '-m', message,
   ]);
   const commit = await git(dir, ['rev-parse', 'HEAD']);
-  return { changedFiles, commit };
+  return { changedFiles, commit, skipped };
 }

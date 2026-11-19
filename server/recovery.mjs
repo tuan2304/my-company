@@ -157,7 +157,7 @@ async function apply(runner, current, { action, note }) {
       await removeWorktreeKeepBranch({ projectRoot: runner.cfg.projectRoot, worktreesDir: runner.cfg.worktreesDir, dir: current.worktree });
       runner.update(id, {
         ...reset, status: 'queued', owner_guidance: note, recoveries: current.recoveries + 1,
-        session_id: null, worktree: null, branch: null, changed_files: null, result: null, turns: 0,
+        session_id: null, worktree: null, branch: null, start_from: null, changed_files: null, result: null, turns: 0,
       });
       runner.log(id, 'recover', `Chủ chọn: Làm lại từ đầu${oldBranch ? ` (nhánh cũ ${oldBranch} vẫn được giữ)` : ''}.${note ? ` Lời dặn: ${note}` : ''}`);
       break;

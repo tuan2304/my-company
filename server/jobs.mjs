@@ -5,7 +5,7 @@ import { shorten } from './guard.mjs';
 import { epicJobRescueBlock } from './epics.mjs';
 import { describeFolders, folderRules, inFolders } from './path-guard.mjs';
 import { findMember, workersOf } from './teams.mjs';
-import { branchDiff, checkRepo, integrateBranches, removeWorktreeKeepBranch, resolveRef } from './worktree.mjs';
+import { branchDiff, checkRepo, gitResult, integrateBranches, removeWorktreeKeepBranch, resolveRef } from './worktree.mjs';
 import { knownFailuresLine } from './project.mjs';
 import { renderFileMap } from './file-map.mjs';
 
@@ -494,9 +494,14 @@ export class Jobs {
     if (task.worktree) {
       await removeWorktreeKeepBranch({ projectRoot: this.r.cfg.projectRoot, worktreesDir: this.r.cfg.worktreesDir, dir: task.worktree });
     }
+    // Lần trước đã lưu bài dở (commit "chưa xong", ví dụ trước khi hết hạn mức và chuyển engine): người nhận làm tiếp từ đó.
+    // (web96 việc #173-177: ~4.200 dòng bài dở bị bỏ vì giao lại "làm từ đầu".)
+    const draft = await this.draftCommits(task);
     const note = [
       `Lần làm trước của việc này${other ? ` (do ${task.member} làm)` : ''} bị dừng vì lỗi: ${shorten(task.error ?? task.failure_code ?? 'không rõ', 300)}`,
-      oldBranch ? `Nhánh cũ ${oldBranch} vẫn còn để tham khảo nếu cần, nhưng hãy làm trên thư mục hiện tại (bắt đầu lại từ mã gốc).` : '',
+      draft > 0
+        ? `Thư mục làm việc của bạn đã có sẵn phần làm dở của lần trước (lấy từ nhánh ${oldBranch}). Hãy xem các file đó (git status/git diff hoặc đọc file) rồi làm tiếp phần còn thiếu, không làm lại từ đầu.`
+        : oldBranch ? `Nhánh cũ ${oldBranch} vẫn còn để tham khảo nếu cần, nhưng hãy làm trên thư mục hiện tại (bắt đầu lại từ mã gốc).` : '',
       'Hãy làm gọn: đọc đúng file cần thiết, làm theo bước nhỏ, chạy test sớm, và nộp bài đúng bốn mục dù chưa trọn vẹn.',
     ].filter(Boolean).join(' ');
     this.r.update(task.id, {
@@ -504,12 +509,21 @@ export class Jobs {
       error: null, failure_code: null, finished_at: null, resume_at: null,
       session_id: null, worktree: null, branch: null, changed_files: null, result: null, turns: 0,
       auto_retries: 0, auto_continues: 0, partial: 0, reassigns: task.reassigns + 1, system_note: note,
+      start_from: draft > 0 ? oldBranch : null,
     });
+    const how = draft > 0 ? `làm tiếp từ bài dở trên ${oldBranch}` : 'làm từ đầu';
     this.r.log(task.id, 'warn', other
-      ? `Việc lỗi (${task.failure_code}): hệ thống tự giao lại cho ${member} làm từ đầu, một lần duy nhất${oldBranch ? ` (nhánh cũ ${oldBranch} vẫn giữ)` : ''}.`
-      : `Việc lỗi (${task.failure_code}): không còn ai rảnh trong team, hệ thống tự cho ${member} làm lại từ đầu bằng phiên mới, một lần duy nhất.`);
+      ? `Việc lỗi (${task.failure_code}): hệ thống tự giao lại cho ${member} ${how}, một lần duy nhất${oldBranch && !draft ? ` (nhánh cũ ${oldBranch} vẫn giữ)` : ''}.`
+      : `Việc lỗi (${task.failure_code}): không còn ai rảnh trong team, hệ thống tự cho ${member} ${how} bằng phiên mới, một lần duy nhất.`);
     this.jobLog(job, 'job', `Việc con #${task.id} lỗi (${task.failure_code}), tự giao lại cho ${member}.`);
     return true;
+  }
+
+  /** Số commit trên nhánh của việc kể từ mã gốc (bài dở đã lưu). Không kiểm được thì 0 (làm từ đầu như trước). */
+  async draftCommits(task) {
+    if (!task.branch || !task.base_commit) return 0;
+    const out = await gitResult(this.r.cfg.projectRoot, ['rev-list', '--count', `${task.base_commit}..${task.branch}`]);
+    return out.code === 0 ? Number.parseInt(out.stdout.trim(), 10) || 0 : 0;
   }
 
   /** Lượt duyệt kết thúc mà chưa có kết luận (agent quên gọi công cụ hoặc lỗi): thử lại một lần. */

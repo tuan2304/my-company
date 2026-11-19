@@ -8,7 +8,7 @@ import { inspectFailure, recoverTask } from '../server/recovery.mjs';
 import { UserError } from '../server/runner.mjs';
 import { git, makeProject, removeDir, testConfig, tmpDir, waitFor } from './helpers.mjs';
 
-const FAKE_KEYS = ['FAKE_CLAUDE_LOG', 'FAKE_CLAUDE_SCENARIO', 'FAKE_PLAN', 'FAKE_REVIEW', 'FAKE_REVIEW_MAP', 'FAKE_UNIQUE'];
+const FAKE_KEYS = ['FAKE_CLAUDE_LOG', 'FAKE_CLAUDE_SCENARIO', 'FAKE_PLAN', 'FAKE_REVIEW', 'FAKE_REVIEW_MAP', 'FAKE_UNIQUE', 'FAKE_SIDE_EFFECT'];
 
 async function boot(env = {}) {
   const root = tmpDir();
@@ -255,6 +255,49 @@ test('việc con chết (tiến trình thoát) hai lần: tự giao lại một 
     const handed = calls(ctx).find((c) => /Ghi chú của hệ thống về lần làm trước/.test(c.prompt));
     assert.ok(handed && /do An làm\) bị dừng vì lỗi/.test(handed.prompt), 'người mới được báo lý do lần trước lỗi');
     assert.equal(ctx.store.getTask(task.id).system_note, null, 'ghi chú dùng xong thì xóa');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('việc con có bài dở rồi mới chết: tự giao lại thì người mới LÀM TIẾP từ bài dở, không làm lại từ đầu', async () => {
+  // Lỗi thật web96 (việc #173-177): bài dở ~4.200 dòng đã lưu nhưng người nhận lại bắt đầu từ mã gốc.
+  const ctx = await boot({ FAKE_PLAN: onePlan(), FAKE_UNIQUE: '1', FAKE_CLAUDE_SCENARIO: 'work_then_crash' });
+  try {
+    const job = await newJob(ctx);
+    await jobIn(ctx, job.id, ['done', 'attention', 'failed']);
+    const task = ctx.store.jobTasks(job.id).find((t) => t.kind === 'work');
+    assert.equal(task.reassigns, 1);
+    assert.notEqual(task.member, 'An');
+    const events = ctx.store.listEvents(task.id).map((e) => e.summary);
+    const anBranch = events.map((s) => s.match(/làm tiếp từ bài dở trên (company\/an-task\d+)/)?.[1]).find(Boolean);
+    assert.ok(anBranch, `phải báo làm tiếp từ bài dở: ${events.join(' | ')}`);
+    assert.ok(events.some((s) => /bắt đầu từ bài dở trên company\/an-task/.test(s)), 'worktree mới tạo từ nhánh bài dở');
+    // Nhánh của người mới chứa bài dở của An, mà mã gốc của việc (để duyệt/so diff) không đổi.
+    const anFile = lsTree(ctx, anBranch).find((f) => /^out-an-task/.test(f));
+    assert.ok(anFile && lsTree(ctx, task.branch).includes(anFile), 'phần An đã làm có trong nhánh mới');
+    assert.equal(task.base_commit, ctx.store.getJob(job.id).base_commit);
+    assert.equal(task.start_from, null, 'dùng xong thì xóa');
+    const handed = calls(ctx).find((c) => /đã có sẵn phần làm dở của lần trước/.test(c.prompt));
+    assert.ok(handed, 'người mới được dặn làm tiếp, không làm lại');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('file do lệnh khác tự sinh ngoài thư mục của team (next dev sửa tsconfig.json) không vào nhánh; file nhân viên ghi thì vẫn vào', async () => {
+  const ctx = await boot({ FAKE_PLAN: onePlan(), FAKE_UNIQUE: '1', FAKE_REVIEW: 'approve', FAKE_SIDE_EFFECT: 'tsconfig.json' });
+  try {
+    const job = await newJob(ctx);
+    const done = await jobIn(ctx, job.id, ['done', 'attention', 'failed']);
+    assert.equal(done.status, 'done', done.error ?? '');
+    const task = ctx.store.jobTasks(job.id).find((t) => t.kind === 'work');
+    const files = lsTree(ctx, task.branch);
+    assert.ok(files.includes(outFile(task)), 'file nhân viên ghi bằng công cụ (ngoài src/ trong test) vẫn được commit');
+    assert.ok(!files.includes('tsconfig.json'), 'file tự sinh ngoài phạm vi không vào nhánh');
+    assert.deepEqual(JSON.parse(task.changed_files), [outFile(task)]);
+    assert.ok(ctx.store.listEvents(task.id).some((e) => e.kind === 'warn' && /Không commit 1 file ngoài thư mục của team.*tsconfig\.json/.test(e.summary)));
+    assert.ok(!lsTree(ctx, done.merge_branch).includes('tsconfig.json'));
   } finally {
     await ctx.cleanup();
   }

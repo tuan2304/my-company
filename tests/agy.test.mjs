@@ -124,14 +124,17 @@ test('parseModelList đọc đầu ra `agy models` và bỏ dòng "Fetching..."'
   assert.deepEqual(parseModelList(''), []);
 });
 
-test('taskArgs agy: model, effort (chỉ khi model không có mức trong tên), luật lệnh, --conversation khi làm tiếp, không -p và không cờ của Claude', () => {
+test('taskArgs agy: model, KHÔNG --effort, accept-edits, luật lệnh, --conversation khi làm tiếp, không -p và không cờ của Claude', () => {
   const role = { model: 'opus', effort: 'high', tools: ['Read', 'Bash'], max_turns: 30 };
   const project = { allowedCommands: ['npm test', 'git status'] };
   const args = agyEngine.taskArgs({ task: { session_id: 'conv-9' }, role, project, resume: true });
   const flag = (n) => args[args.indexOf(n) + 1];
   assert.equal(flag('--output-format'), 'stream-json');
   assert.equal(flag('--model'), 'claude-opus-4-6-thinking');
-  assert.equal(flag('--effort'), 'high');
+  // Lỗi thật web96 (việc #173-177): agy báo "--effort is not supported for model claude-opus-4-6-thinking" và chết ở bước 0.
+  assert.ok(!args.includes('--effort'), 'agy từ chối --effort với cả model Claude');
+  // Lỗi thật web96 (việc #178): không có accept-edits thì agy chạy nền tự từ chối ghi file, nộp bài rỗng.
+  assert.equal(flag('--mode'), 'accept-edits');
   assert.equal(flag('--conversation'), 'conv-9');
   assert.deepEqual(JSON.parse(flag('--settings')), { permissions: { allow: ['command(npm test)', 'command(git status)'] } });
   for (const bad of ['-p', '--max-turns', '--tools', '--setting-sources', '--append-system-prompt-file', '--plugin-dir', '--mcp-config']) assert.ok(!args.includes(bad), bad);
@@ -140,6 +143,9 @@ test('taskArgs agy: model, effort (chỉ khi model không có mức trong tên),
   assert.equal(flash[flash.indexOf('--model') + 1], 'gemini-3.8-flash-low');
   assert.ok(!flash.includes('--effort'), 'agy từ chối --effort đi cùng model đã có mức trong tên');
   assert.ok(!flash.includes('--conversation'));
+  // Không biết danh sách model (không --model) cũng không truyền --effort: model mặc định có thể cũng từ chối.
+  const unknown = agyEngine.taskArgs({ task: {}, role: { ...role, model: 'claude-sonnet-4-6' }, project, resume: false });
+  assert.ok(!unknown.includes('--effort'));
 });
 
 test('buildAllowRules: chỉ khi vai trò có Bash, chỉ đúng các lệnh đã khai (khớp nguyên văn, không có "*")', () => {
@@ -152,6 +158,8 @@ test('answerArgs agy: không luật lệnh nào; leadArgs từ chối rõ ràng'
   const args = agyEngine.answerArgs({ model: 'sonnet', effort: 'medium', session: 'conv-1' });
   assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { permissions: { allow: [] } });
   assert.equal(args[args.indexOf('--conversation') + 1], 'conv-1');
+  assert.ok(!args.includes('--effort'));
+  assert.ok(!args.includes('--mode'), 'lượt trả lời chỉ đọc: không bật accept-edits');
   assert.throws(() => agyEngine.leadArgs(), /chưa chạy được lượt của Trưởng nhóm/);
 });
 

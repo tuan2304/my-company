@@ -229,11 +229,30 @@ test('decideBash: cho phép lệnh ghép khi mọi phần đều được phép,
     denied('rm -rf ../khac', /ngoài thư mục làm việc/);
     denied('rm -rf .git', /\.git/);
     denied('rm -rf *', /không xóa bằng mẫu ở gốc/);
-    denied('rm -rf .', /không được xóa cả thư mục làm việc/);
-    denied(`rm -rf ${root}`, /không được xóa cả thư mục làm việc/);
+    denied('rm -rf .', /không được xóa hay ghi đè cả thư mục làm việc/);
+    denied(`rm -rf ${root}`, /không được xóa hay ghi đè cả thư mục làm việc/);
     denied('rm -rf ~/x', /đường dẫn không rõ/);
     denied('npm run test && rm -rf /', /ngoài thư mục làm việc/);
     silent('rm -rf');
+
+    // Khôi phục file về bản của nhánh khác (web96 việc #213): chỉ khi mọi file nằm trong phạm vi.
+    allowedVerdict('git checkout main -- src/server/a.ts');
+    allowedVerdict('git checkout -- src/server/a.ts src/server/b.ts');
+    allowedVerdict('git restore --source=main -- src/server/a.ts');
+    allowedVerdict('git restore -s HEAD~1 --staged --worktree src/server/a.ts');
+    allowedVerdict('git checkout main -- src/server/a.ts && git status');
+    denied('git checkout main -- src/app/page.tsx', /Chỉ khôi phục được file[\s\S]*Ngoài thư mục được phép sửa của team/);
+    denied('git restore --source=main -- .', /ghi đè cả thư mục làm việc/);
+    denied('git checkout main -- .git/config', /\.git/);
+    denied('git checkout main -- ../khac/a.ts', /ngoài thư mục làm việc/);
+    silent('git checkout main', 'không có "--" là đổi nhánh');
+    silent('git checkout -b moi -- src/server/a.ts', 'cờ lạ thì không ý kiến');
+    silent('git checkout -f main -- src/server/a.ts');
+    silent('git restore -p src/server/a.ts');
+    silent('git restore --source=-x -- src/server/a.ts', 'tên nhánh bắt đầu bằng - có thể là cờ');
+    silent('git restore --source main:x -- src/server/a.ts');
+    silent('git restore --staged');
+    silent('git checkout a b -- src/server/a.ts', 'hai tham số trước "--" là cú pháp lạ');
 
     allowedVerdict('node .company-tmp/thu.mjs');
     allowedVerdict('node --test src/server/*.test.mjs');

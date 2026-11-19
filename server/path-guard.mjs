@@ -245,7 +245,7 @@ function commandPath(raw, { root, allow, mode, links, write }) {
   }
   if (write) {
     const rel = path.relative(norm(realpathLoose(path.resolve(root))), norm(realpathLoose(path.resolve(root, probe))));
-    if (rel === '') return { ok: false, reason: 'không được xóa cả thư mục làm việc.' };
+    if (rel === '') return { ok: false, reason: 'không được xóa hay ghi đè cả thư mục làm việc một lần.' };
   }
   const verdict = decide({ toolName: write ? 'Write' : 'Read', toolInput: { file_path: probe }, root, allow, mode, links });
   return verdict.allowed ? { ok: true } : { ok: false, reason: verdict.reason };
@@ -304,7 +304,49 @@ function segmentVerdict(segment, ctx) {
     if (!r.ok) return { deny: `Lệnh node chỉ chạy được file trong thư mục làm việc. ${r.reason}` };
     return 'allow';
   }
+  if (name === 'git' && (rest[0] === 'checkout' || rest[0] === 'restore')) return gitRestoreVerdict(rest, ctx);
   return 'unknown';
+}
+
+// Tên nhánh/commit an toàn (không bắt đầu bằng "-" để không lẫn với cờ; không có ":" kiểu nhánh:đường-dẫn).
+const GIT_REF = /^[\w./@^~][\w./@^~-]*$/;
+const RESTORE_FLAGS = new Set(['--worktree', '-W', '--staged', '-S']);
+
+/**
+ * Khôi phục file về bản của một nhánh/commit: `git checkout [<ref>] -- <file...>` hoặc `git restore [--source=<ref>] [--staged]
+ * [--worktree] [--] <file...>`. Chỉ ghi vào các file nêu tên, nên được phép khi MỌI file nằm trong thư mục được sửa của team
+ * (web96 việc #213: DevOps không khôi phục được tsconfig.json vì lệnh này phải chờ duyệt mà chạy nền thì không ai duyệt).
+ * `git checkout` không có "--" là đổi nhánh: không ý kiến. Cờ lạ (-p, -f, --ours...) cũng không ý kiến.
+ */
+function gitRestoreVerdict([sub, ...args], ctx) {
+  const dash = args.indexOf('--');
+  const before = dash >= 0 ? args.slice(0, dash) : args;
+  let paths = dash >= 0 ? args.slice(dash + 1) : [];
+  if (sub === 'checkout') {
+    if (dash < 0 || before.length > 1 || (before.length === 1 && !GIT_REF.test(before[0]))) return 'unknown';
+  } else {
+    for (let i = 0; i < before.length; i += 1) {
+      const w = before[i];
+      if (RESTORE_FLAGS.has(w)) continue;
+      if (w.startsWith('--source=')) {
+        if (!GIT_REF.test(w.slice('--source='.length))) return 'unknown';
+        continue;
+      }
+      if (w === '-s' || w === '--source') {
+        if (!GIT_REF.test(before[i + 1] ?? '')) return 'unknown';
+        i += 1;
+        continue;
+      }
+      if (w.startsWith('-')) return 'unknown';
+      paths = [...paths, w];
+    }
+  }
+  if (paths.length === 0) return 'unknown';
+  for (const p of paths) {
+    const r = commandPath(p, { ...ctx, write: true });
+    if (!r.ok) return { deny: `Chỉ khôi phục được file nằm trong thư mục được sửa của team. ${r.reason}` };
+  }
+  return 'allow';
 }
 
 /** Quyết định cho công cụ Bash: { allowed, decision: 'allow' | undefined, reason }. Xem chú thích ở trên. */

@@ -12,7 +12,10 @@ import { sanitizedEnv } from '../guard.mjs';
  * - Chạy nền (-p) agy TỰ TỪ CHỐI mọi lệnh Bash chưa có luật cho phép. Luật `permissions.allow` ("command(<lệnh>)") chỉ khớp NGUYÊN VĂN
  *   (không có dấu * hay tham số thêm; lệnh ghép bằng && hoặc ; bị từ chối) nên nhân viên chỉ chạy đúng các lệnh đã khai trong hồ sơ dự án.
  * - `-p` luôn đòi lời nhắc làm tham số (không đọc stdin được).
- * - --effort xung đột với model đã có mức trong tên (gemini-3.8-flash-low...): chỉ truyền effort cho model không có mức trong tên.
+ * - --effort: agy 1.5.12 từ chối với MỌI model đang có (Gemini/GPT đã có mức trong tên; claude-opus-4-6-thinking và claude-sonnet-4-6
+ *   báo "--effort is not supported for model", lượt chết ở bước 0). Nên không bao giờ truyền --effort; mức suy luận nằm sẵn trong model.
+ * - Chạy nền (-p) agy còn TỰ TỪ CHỐI ghi file ("headless mode cannot prompt") khi thư mục làm việc có hook của công ty. `--mode accept-edits`
+ *   cho phép ghi; hook PreToolUse vẫn chạy trước nên ghi ngoài thư mục của team vẫn bị chặn (đã thử thật, 2026-11-19).
  * - Không còn cách đo hạn mức bằng `/usage` (từ agy 1.5 nó bị coi là lời nhắc và tốn ~8 nghìn token): chỉ biết hết hạn mức khi lượt chạy lỗi.
  */
 
@@ -30,8 +33,6 @@ export const TIER_PREFERENCE = {
   sonnet: ['gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'claude-sonnet-4-6'],
   opus: ['claude-opus-4-6-thinking', 'claude-sonnet-4-6', 'gemini-3.8-flash-high'],
 };
-
-const EMBEDDED_LEVEL = /-(low|medium|high)$/;
 
 /** Danh sách model từ `agy models`: mỗi dòng "<id>\t<tên hiển thị>". */
 export function parseModelList(text) {
@@ -56,13 +57,10 @@ export function resolveModel(name, available = null) {
   return list.find((id) => available.includes(id)) ?? undefined;
 }
 
-function modelArgs({ model, effort, available }) {
+/** Không truyền --effort (xem đầu file): agy từ chối cờ này với mọi model đang có và lượt chết ngay ở bước 0. */
+function modelArgs({ model, available }) {
   const id = resolveModel(model, available);
-  const args = [];
-  if (id) args.push('--model', id);
-  // agy từ chối --effort đi cùng model đã có mức trong tên.
-  if (effort && !(id && EMBEDDED_LEVEL.test(id))) args.push('--effort', effort);
-  return args;
+  return id ? ['--model', id] : [];
 }
 
 /** Luật cho phép lệnh Bash: chỉ đúng các lệnh đã khai trong hồ sơ dự án, khớp nguyên văn. */
@@ -76,14 +74,16 @@ function settingsArg(role, project) {
 }
 
 function taskArgs({ task, role, project, resume, models }) {
-  const args = ['--output-format', 'stream-json', ...modelArgs({ model: role.model, effort: role.effort, available: models })];
+  const args = ['--output-format', 'stream-json', ...modelArgs({ model: role.model, available: models })];
+  // Không có cờ này thì agy chạy nền tự từ chối mọi lần ghi file; phạm vi ghi vẫn do hook của công ty quyết.
+  args.push('--mode', 'accept-edits');
   args.push('--settings', settingsArg(role, project));
   if (resume && task.session_id) args.push('--conversation', task.session_id);
   return args;
 }
 
-function answerArgs({ model, effort, session, models }) {
-  const args = ['--output-format', 'stream-json', ...modelArgs({ model, effort, available: models })];
+function answerArgs({ model, session, models }) {
+  const args = ['--output-format', 'stream-json', ...modelArgs({ model, available: models })];
   args.push('--settings', JSON.stringify({ permissions: { allow: [] } }));
   if (session) args.push('--conversation', session);
   return args;

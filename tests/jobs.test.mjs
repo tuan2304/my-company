@@ -8,7 +8,7 @@ import { openDb } from '../server/db.mjs';
 import { startServer } from '../server/index.mjs';
 import { buildLeadSystemPrompt, findOverlap, MAX_SCOPE_ENTRIES, normalizeFiles } from '../server/jobs.mjs';
 import { findMember, loadTeams } from '../server/teams.mjs';
-import { copyFiles, createWorktree, commitWorktree, linkDirs, linkedDirs } from '../server/worktree.mjs';
+import { copyFiles, createWorktree, commitWorktree, linkDirs, linkedDirs, outOfScope } from '../server/worktree.mjs';
 import { REPO, git, makeProject, removeDir, testConfig, tmpDir, waitFor } from './helpers.mjs';
 
 const FAKE_KEYS = ['FAKE_CLAUDE_LOG', 'FAKE_CLAUDE_SCENARIO', 'FAKE_CLAUDE_TRIAGE', 'FAKE_PLAN', 'FAKE_REVIEW', 'FAKE_REVIEW_MAP', 'FAKE_UNIQUE', 'FAKE_CONFLICT', 'FAKE_WORK_DELAY_MS'];
@@ -441,6 +441,52 @@ test('commitWorktree vẫn commit được khi node_modules đã nằm trong .gi
   } finally {
     removeDir(root);
   }
+});
+
+test('commitWorktree có phạm vi: file công cụ tự sinh ngoài thư mục của team (tsconfig.json, next-env.d.ts) không vào nhánh', async () => {
+  // Lỗi thật web96: team Kiểm thử chạy next dev, Next sửa tsconfig.json + next-env.d.ts, hai file theo vào nhánh và bản gộp.
+  const root = tmpDir();
+  try {
+    const { project } = makeProject(root);
+    fs.writeFileSync(path.join(project, 'tsconfig.json'), '{}');
+    fs.writeFileSync(path.join(project, 'next-env.d.ts'), '// a\n');
+    fs.mkdirSync(path.join(project, 'tests'));
+    fs.writeFileSync(path.join(project, 'tests', 'cu [1].cjs'), 'x\n');
+    git(project, 'add', '-A');
+    git(project, 'commit', '-q', '-m', 'base');
+    const wt = await createWorktree({ projectRoot: project, worktreesDir: path.join(root, 'wts'), member: 'Quan', taskId: 7 });
+    fs.writeFileSync(path.join(wt.dir, 'tsconfig.json'), '{"include":[".next/dev/dev/types"]}');
+    fs.writeFileSync(path.join(wt.dir, 'next-env.d.ts'), '// b\n');
+    fs.writeFileSync(path.join(wt.dir, 'tests', 'moi.cjs'), 'y\n');
+    fs.rmSync(path.join(wt.dir, 'tests', 'cu [1].cjs'));
+    fs.writeFileSync(path.join(wt.dir, 'README.md'), 'sửa\n');
+    const scope = { allow: ['tests', 'scripts/verify-core.cjs'], mode: 'worker' };
+    const out = await commitWorktree({ dir: wt.dir, message: 'thử', scope });
+    assert.deepEqual(out.changedFiles.sort(), ['tests/cu [1].cjs', 'tests/moi.cjs']);
+    assert.deepEqual(out.skipped.sort(), ['README.md', 'next-env.d.ts', 'tsconfig.json']);
+    const committed = git(wt.dir, 'show', '--name-only', '--format=', 'HEAD').trim().split('\n').sort();
+    assert.deepEqual(committed, ['tests/cu [1].cjs', 'tests/moi.cjs'], 'xóa file trong phạm vi vẫn được commit; file ngoài phạm vi thì không');
+    // File bị bỏ vẫn nằm trong thư mục làm việc (không mất gì), lần commit sau vẫn bị lọc, và chỉ còn chúng thì không tạo commit rỗng.
+    assert.match(fs.readFileSync(path.join(wt.dir, 'tsconfig.json'), 'utf8'), /dev\/dev/);
+    const again = await commitWorktree({ dir: wt.dir, message: 'lần 2', scope });
+    assert.deepEqual(again.changedFiles, []);
+    assert.equal(again.commit, null);
+    // Không phạm vi (danh sách rỗng, team viết code được sửa mọi nơi) thì commit hết như cũ.
+    const all = await commitWorktree({ dir: wt.dir, message: 'lần 3', scope: { allow: [], mode: 'worker' } });
+    assert.deepEqual(all.changedFiles.sort(), ['README.md', 'next-env.d.ts', 'tsconfig.json']);
+  } finally {
+    removeDir(root);
+  }
+});
+
+test('outOfScope: luật giống hook chặn file (tiền tố, "!" loại trừ, team tài liệu chưa khai thư mục thì không gì vào nhánh)', () => {
+  const files = ['src/app/page.tsx', 'src/app/api/x/route.ts', 'tsconfig.json', 'src/lib/a.ts'];
+  assert.deepEqual(outOfScope(files, { allow: ['src/app', '!src/app/api', 'src/lib'], mode: 'worker' }), ['src/app/api/x/route.ts', 'tsconfig.json']);
+  assert.deepEqual(outOfScope(files, { allow: [], mode: 'worker' }), []);
+  assert.deepEqual(outOfScope(files, { allow: [], mode: 'scoped' }), files);
+  assert.deepEqual(outOfScope(files, null), []);
+  // File nhân viên tự ghi bằng công cụ thì giữ, dù ngoài phạm vi (hook đã cho ghi): chỉ thứ do lệnh khác sinh ra mới bị bỏ.
+  assert.deepEqual(outOfScope(files, { allow: ['src/lib'], mode: 'worker', written: ['tsconfig.json'] }), ['src/app/page.tsx', 'src/app/api/x/route.ts']);
 });
 
 test('cơ sở dữ liệu cũ (giai đoạn 1) được nâng cấp thêm các cột mới', () => {

@@ -202,6 +202,8 @@ const EXTRA_COLUMNS = [
   ['partial', 'INTEGER NOT NULL DEFAULT 0'],
   ['reassigns', 'INTEGER NOT NULL DEFAULT 0'],
   ['system_note', 'TEXT'],
+  // Nhánh có bài dở (commit "chưa xong") để worktree mới bắt đầu từ đó thay vì từ mã gốc, khi việc được tự giao lại. Dùng xong thì xóa.
+  ['start_from', 'TEXT'],
 ];
 
 // Cột thêm cho bảng jobs ở giai đoạn 3: việc lớn của team nằm trong một yêu cầu, có thể phụ thuộc việc khác.
@@ -252,7 +254,7 @@ function migrate(db) {
 const TASK_COLUMNS = new Set([
   'level', 'level_source', 'level_reason', 'escalations', 'revisions', 'review_feedback', 'files', 'verdict', 'epic_id',
   'failure_code', 'owner_guidance', 'recoveries', 'auto_retries', 'ask_owner_id', 'engine', 'handoff_from',
-  'auto_continues', 'partial', 'reassigns', 'system_note', 'member', 'role',
+  'auto_continues', 'partial', 'reassigns', 'system_note', 'start_from', 'member', 'role',
   'status', 'model', 'effort', 'session_id', 'worktree', 'branch', 'base_commit', 'attempts', 'result',
   'error', 'changed_files', 'turns', 'duration_ms', 'input_tokens', 'output_tokens', 'cache_read_tokens',
   'cache_creation_tokens', 'est_cost_usd', 'resume_at', 'started_at', 'finished_at',

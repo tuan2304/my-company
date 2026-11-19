@@ -98,7 +98,7 @@ export function buildSystemPrompt({ member, team, role, project, canAsk = false,
       '- Bạn làm việc trong một nhánh git riêng ở thư mục hiện tại. Không push, không đổi nhánh, không thêm hay sửa remote.',
       '- Chỉ làm đúng phạm vi việc được giao. Không đọc, không in nội dung file .env, khóa bí mật hay khóa service_role.',
       '- Chỉ chạy các lệnh đã được cho phép. Lệnh ghép bằng && được duyệt khi từng phần đều được phép. Nếu một lệnh bị từ chối thì không tìm cách lách và không hỏi xin, hãy báo lại trong phần "Điều còn dang dở".',
-      `- Thư mục nháp ${SCRATCH_DIR}/ ở gốc thư mục làm việc: ghi file tạm, script thử, kết quả chạy vào đó thoải mái (không bị giới hạn thư mục, không được commit). Được xóa file trong thư mục làm việc bằng rm và chạy "node <file trong thư mục làm việc>".`,
+      `- Thư mục nháp ${SCRATCH_DIR}/ ở gốc thư mục làm việc: ghi file tạm, script thử, kết quả chạy vào đó thoải mái (không bị giới hạn thư mục, không được commit). Được xóa file trong thư mục làm việc bằng rm, chạy "node <file trong thư mục làm việc>", và khôi phục file trong phạm vi của team về bản của một nhánh bằng "git checkout <nhánh> -- <file>" (hoặc sửa thẳng file đó bằng công cụ sửa file).`,
       '- Không tự commit: hệ thống sẽ commit thay đổi của bạn khi bạn xong.',
       canAsk
         ? '- Không có người trực tiếp ngồi cạnh bạn. Thiếu thông tin nhỏ thì chọn phương án hợp lý nhất, tiếp tục làm và ghi giả định vào "Điều còn dang dở". ' +
@@ -153,6 +153,9 @@ export function guardEnv({ root, allow, mode, links = [], commands = [] }) {
     COMPANY_GUARD_COMMANDS: JSON.stringify(commands ?? []),
   };
 }
+
+// Công cụ ghi file (Claude: Write/Edit/MultiEdit/NotebookEdit; agy: write_file, replace_file_content...): để biết file nào nhân viên tự ghi.
+const WRITE_TOOL_NAME = /(write|edit|replace|create|patch|insert|append)/i;
 
 // Phần mở rộng tên file thường gặp, để nhận ra tên file trong mục "File thay đổi" của báo cáo.
 const FILE_EXT = /\.(?:[cm]?[jt]sx?|json|md|mdx|css|scss|sass|less|html?|vue|svelte|astro|sql|prisma|py|rb|go|rs|java|kt|php|cs|yml|yaml|toml|ini|txt|csv|xml|svg|png|jpe?g|gif|webp|sh|ps1|bat|lock|graphql|proto)$/i;
@@ -709,9 +712,11 @@ export class Runner extends EventEmitter {
         links: project?.worktreeLinks,
         copies: project?.worktreeCopies,
         baseCommit: task.job_id ? this.store.getJob(task.job_id)?.base_commit ?? undefined : undefined,
+        startFrom: task.start_from || null,
       });
-      task = this.update(task.id, { worktree: wt.dir, branch: wt.branch, base_commit: wt.baseCommit });
+      task = this.update(task.id, { worktree: wt.dir, branch: wt.branch, base_commit: wt.baseCommit, start_from: null });
       const extras = [
+        ...(wt.startedFrom ? [`bắt đầu từ bài dở trên ${wt.startedFrom}`] : []),
         ...(wt.linked.length ? [`nối ${wt.linked.join(', ')}`] : []),
         ...(wt.copied.length ? [`chép ${wt.copied.join(', ')}`] : []),
       ];
@@ -1127,7 +1132,12 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
         this.enforceTurnLimit(state);
         for (const block of msg.message?.content ?? []) {
           if (block.type === 'text' && block.text?.trim()) this.log(taskId, 'say', shorten(block.text, 600));
-          else if (block.type === 'tool_use') this.log(taskId, 'tool', toolSummary(block));
+          else if (block.type === 'tool_use') {
+            this.log(taskId, 'tool', toolSummary(block));
+            // File nhân viên tự ghi bằng công cụ: không bao giờ bị bộ lọc phạm vi bỏ âm thầm lúc commit (xem commitScope).
+            const target = block.input?.file_path ?? block.input?.notebook_path;
+            if (typeof target === 'string' && target && WRITE_TOOL_NAME.test(String(block.name ?? ''))) (state.written ??= new Set()).add(target);
+          }
         }
         break;
       }
@@ -1259,8 +1269,10 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
           dir: task.worktree,
           message: `company: ${task.title}\n\nViệc #${task.id} do ${task.member} (${task.role}) làm.`,
           exclude: [...(project?.worktreeLinks ?? []), ...(project?.worktreeCopies ?? []), ...state.engine.workspaceExcludes],
+          scope: this.commitScope(task, project, state),
         });
         changedFiles = committed.changedFiles;
+        this.logSkipped(taskId, committed.skipped);
       } catch (err) {
         this.log(taskId, 'warn', `Không commit được thay đổi: ${err.message}`);
       }
@@ -1372,6 +1384,25 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
     this.schedule();
   }
 
+  /**
+   * Phạm vi được commit của việc: thư mục của team trong hồ sơ dự án (cùng luật với hook chặn file). Không tìm ra team thì không lọc.
+   * `written`: file nhân viên ghi bằng công cụ trong lượt này, luôn được commit (chỉ thay đổi do lệnh khác sinh ra mới bị bỏ).
+   */
+  commitScope(task, project, state) {
+    const found = findMember(this.getTeams(), task.member);
+    if (!found) return null;
+    const written = [...(state?.written ?? [])]
+      .map((p) => path.relative(task.worktree, path.resolve(task.worktree, p)).split(path.sep).join('/'))
+      .filter((rel) => rel && !rel.startsWith('..'));
+    return { allow: project?.folders?.[found.team.id] ?? [], mode: found.team.requiresFolders ? 'scoped' : 'worker', written };
+  }
+
+  logSkipped(taskId, skipped) {
+    if (!skipped?.length) return;
+    const list = skipped.slice(0, 8).join(', ') + (skipped.length > 8 ? ', ...' : '');
+    this.log(taskId, 'warn', `Không commit ${skipped.length} file ngoài thư mục của team (thường do công cụ tự sinh, ví dụ next dev sửa tsconfig.json): ${list}. Các file này vẫn nằm trong thư mục làm việc.`);
+  }
+
   /** Nhánh của việc có khác mã gốc không. Không có mã gốc hay không kiểm được thì coi như có (không đánh lỗi oan). */
   async branchEmpty(task) {
     if (!task.base_commit || !task.worktree) return false;
@@ -1397,11 +1428,14 @@ Lần chạy trước do ${from} làm nhưng bị dừng vì hết hạn mức. 
     if (!task.worktree) return [];
     let files = [];
     try {
-      files = (await commitWorktree({
+      const committed = await commitWorktree({
         dir: task.worktree,
         message: `company (chưa xong): ${task.title}\n\nViệc #${task.id}`,
         exclude: [...(project?.worktreeLinks ?? []), ...(project?.worktreeCopies ?? []), ...state.engine.workspaceExcludes],
-      })).changedFiles;
+        scope: this.commitScope(task, project, state),
+      });
+      files = committed.changedFiles;
+      this.logSkipped(task.id, committed.skipped);
     } catch (err) {
       this.log(task.id, 'warn', `Không lưu tạm được phần đã làm: ${err.message}`);
     }

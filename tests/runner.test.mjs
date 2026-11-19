@@ -389,7 +389,7 @@ test('commitWorktree liệt kê đúng file đã sửa, file mới, tên có d�
     const { changedFiles, commit } = await commitWorktree({ dir: project, message: 'thử' });
     assert.deepEqual([...changedFiles].sort(), ['file moi co dau cach.txt', 'moi.txt', 'src/math.mjs', 'sub/a.txt']);
     assert.ok(commit);
-    assert.deepEqual(await commitWorktree({ dir: project, message: 'trống' }), { changedFiles: [], commit: null });
+    assert.deepEqual(await commitWorktree({ dir: project, message: 'trống' }), { changedFiles: [], commit: null, skipped: [] });
     assert.deepEqual(parsePorcelainZ(' M a b.txt\0?? c.txt\0R  moi\0cu\0'), ['a b.txt', 'c.txt', 'moi']);
   } finally {
     removeDir(root);

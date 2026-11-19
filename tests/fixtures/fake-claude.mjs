@@ -82,6 +82,8 @@ const doWork = () => {
   }
   fs.writeFileSync(file, content);
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Mình bắt đầu làm.' }, { type: 'tool_use', name: 'Write', input: { file_path: file, content } }] } });
+  // FAKE_SIDE_EFFECT='tsconfig.json': file do lệnh khác tự sinh (như next dev sửa tsconfig.json), không qua công cụ ghi file.
+  if (process.env.FAKE_SIDE_EFFECT) fs.writeFileSync(process.env.FAKE_SIDE_EFFECT, `sinh bởi công cụ ${base}\n`);
   out({ type: 'user', message: { content: [{ type: 'tool_result', content: 'ok', is_error: false }] } });
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'Xong, token=sk-ant-abcdefghijklmnop' }] } });
 };
@@ -269,6 +271,12 @@ switch (scenario) {
     break;
   case 'crash':
     process.stderr.write('lỗi giả lập\n');
+    process.exitCode = 2;
+    break;
+  case 'work_then_crash':
+    // Ghi được phần bài rồi tiến trình chết (như hết hạn mức giữa chừng rồi engine sau chết ngay): bài dở được lưu tạm.
+    doWork();
+    process.stderr.write('lỗi giả lập sau khi đã làm\n');
     process.exitCode = 2;
     break;
   case 'crash_once':
